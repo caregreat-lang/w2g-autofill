@@ -1,6 +1,6 @@
 ﻿// Keeps W2G AutoFill working offline. Network first, so updates show up as soon as the device is online.
 // Only the app's own files are cached; client files you open never leave the device.
-const CACHE = 'w2gaf-20261102220144';
+const CACHE = 'w2gaf-20261102225900';
 const FILES = ['./', 'index.html', 'manifest.webmanifest', 'app-icon.png', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png',
   'js/parse.js', 'js/fill.js', 'js/store.js', 'js/templates.js', 'js/app.js',
   'lib/pdf.min.js', 'lib/pdf.worker.min.js', 'lib/pdf-lib.min.js', 'lib/xlsx.full.min.js', 'lib/tesseract.min.js', 'lib/worker.min.js'];

@@ -121,6 +121,9 @@ th{font-size:12px;color:var(--muted);font-weight:600}
   .panel{position:static;max-height:none}
   .fillgrid{grid-template-columns:minmax(0,1fr)}
   .fillgrid>div:last-child{order:-1}
+  .rv td:first-child{width:36%}
+  .rv td:last-child{width:1%}
+  .rv td{padding:6px 4px}
   .tab{padding:6px 10px;font-size:13px}
   .tab b{width:18px;height:18px;margin-right:4px}
   .hide-sm{display:none}
@@ -151,6 +154,10 @@ th{font-size:12px;color:var(--muted);font-weight:600}
         <strong>Tap or drop client files here</strong>
         <span>PDF · Excel · CSV · PNG · JPG — read on this device, never uploaded</span>
       </label>
+      <div class="row" style="margin-top:12px;background:var(--soft);border-radius:10px;padding:10px 12px">
+        <label for="autoTpl"><b>⚡ Auto-fill as soon as details are found:</b></label>
+        <select id="autoTpl" class="grow" style="min-width:200px"></select>
+      </div>
       <div class="log" id="importLog"></div>
     </div>
     <div class="card">
@@ -237,7 +244,8 @@ th{font-size:12px;color:var(--muted);font-weight:600}
       <ol>
         <li>Open <b>Clients</b> and drop in an <b>ePartner policy printout</b> (PDF), a <b>customer list</b> (Excel / CSV / PDF table), or a <b>photo / screenshot</b>.</li>
         <li>The app shows what it found. <span class="chip ok">OK</span> = read cleanly, <span class="chip check">Check</span> = found but please confirm (e.g. phone missing its leading 0), <span class="chip missing">Missing</span> = not in the file — it stays blank, the app never guesses.</li>
-        <li>Press <b>Add</b> to save them. Tap a client any time to correct a detail.</li>
+        <li>With <b>⚡ Auto-fill</b> set to a form (or <i>All my forms</i>), new clients are saved and the form is filled straight away — you land on the preview, ready to check and download. If a client is already in your list, the app asks before updating them. Set it to <i>Off</i> to only save clients.</li>
+        <li>Tap a client any time to correct a detail.</li>
       </ol>
       <h3>2 · Set up a form (once per form)</h3>
       <ol>

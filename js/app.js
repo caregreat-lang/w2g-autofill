@@ -210,44 +210,70 @@
     }
   }
 
+  // the client already in the list that this record describes (same NRIC + policy, or same name + birthday)
+  const sameAs = rec => state.clients.find(c => {
+    const a = (rec.fields.nric.value || '').replace(/\D/g, ''), b = (c.fields.nric.value || '').replace(/\D/g, '');
+    if (a && b) return a === b && (!rec.fields.policyNo.value || !c.fields.policyNo.value || rec.fields.policyNo.value === c.fields.policyNo.value);
+    return rec.fields.name.value && rec.fields.name.value === c.fields.name.value && rec.fields.dob.value === c.fields.dob.value;
+  });
+
+  // ---- auto-fill choice (remembered on this device) ----
+  const AUTO_KEY = 'w2gaf-autofill';
+  // no choice made yet -> auto-fill is on for all forms
+  const getAuto = () => { try { const v = localStorage.getItem(AUTO_KEY); return v === null ? '*' : v; } catch (e) { return '*'; } };
+  function renderAutoTpl() {
+    const cur = getAuto(), sel = $('#autoTpl');
+    sel.innerHTML = state.templates.length
+      ? `<option value="">Off — just save the clients</option>${state.templates.length > 1 ? `<option value="*" ${cur === '*' ? 'selected' : ''}>All my forms (${state.templates.length})</option>` : ''}${state.templates.map(t => `<option value="${t.id}" ${t.id === cur || (cur === '*' && state.templates.length === 1) ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}`
+      : '<option value="">Set up a form in step 2 first</option>';
+    sel.disabled = !state.templates.length;
+  }
+  $('#autoTpl').onchange = () => { try { localStorage.setItem(AUTO_KEY, $('#autoTpl').value); } catch (e) {} };
+  const autoTemplates = () => { const v = $('#autoTpl').value; return v === '*' ? state.templates : state.templates.filter(t => t.id === v); };
+
   async function handleClientFiles(files) {
     if (!files.length) return;
     $('#importLog').innerHTML = '';
     const found = [];
     for (const f of files) { const r = await readClientFile(f); if (r && r.records.length) found.push(r); }
-    if (found.length) reviewImport(found);
+    if (!found.length) return;
+    const tpls = autoTemplates();
+    if (!tpls.length) { reviewImport(found); return; }
+    // Auto-fill: new clients are saved straight away; updating a client already in the list still asks first
+    const recs = found.flatMap(r => r.records), fresh = recs.filter(r => !sameAs(r)), dups = recs.filter(r => sameAs(r));
+    for (const r of fresh) await S.put('clients', r);
+    await loadClients();
+    if (fresh.length) toast(`${fresh.length} client${fresh.length > 1 ? 's' : ''} saved — filling the form now`);
+    const go = ids => fillNow(tpls, state.clients.filter(c => ids.includes(c.id)));
+    if (dups.length) reviewImport([{ records: dups }], ids => go(fresh.map(r => r.id).concat(ids)), 'Already in your list — update before filling?');
+    else go(fresh.map(r => r.id));
   }
 
-  // Shows what was found and asks before adding / updating anything
-  function reviewImport(found) {
+  // Shows what was found and asks before adding / updating anything. onDone(savedIds) runs after Add (or Cancel, with []).
+  function reviewImport(found, onDone, title) {
     const recs = found.flatMap(r => r.records);
-    const sameAs = rec => state.clients.find(c => {
-      const a = (rec.fields.nric.value || '').replace(/\D/g, ''), b = (c.fields.nric.value || '').replace(/\D/g, '');
-      if (a && b) return a === b && (!rec.fields.policyNo.value || !c.fields.policyNo.value || rec.fields.policyNo.value === c.fields.policyNo.value);
-      return rec.fields.name.value && rec.fields.name.value === c.fields.name.value && rec.fields.dob.value === c.fields.dob.value;
-    });
     const sheetMaps = found.flatMap(r => r.sheets || []);
     const mapHtml = sheetMaps.map(s => `<p class="hint" style="margin:6px 0">Columns read from <b>${esc(s.sheet)}</b>: ${s.header.map((h, i) => h === '' ? '' : `${esc(h)} → ${s.map[i] ? '<b>' + esc(P.FIELDS.find(f => f.key === s.map[i]).label) + '</b>' : '<i>not used</i>'}`).filter(Boolean).join(' · ')}</p>`).join('');
-    modal(`<h2>Found ${recs.length} client${recs.length > 1 ? 's' : ''}</h2>
+    modal(`<h2>${esc(title || `Found ${recs.length} client${recs.length > 1 ? 's' : ''}`)}</h2>
       <p class="hint">Nothing is saved until you press Add. Open any row to correct it first.</p>${mapHtml}
       <div class="tablewrap"><table><thead><tr><th><input type="checkbox" id="imAll" checked></th><th>Name</th><th>NRIC</th><th>Policy</th><th>Data check</th><th>Already in list?</th></tr></thead><tbody>
       ${recs.map((r, i) => { const n = counts(r), dup = sameAs(r); return `<tr><td><input type="checkbox" data-i="${i}" checked></td><td><a href="#" data-open="${i}"><b>${esc(r.fields.name.value || '(no name)')}</b></a><br><small class="hint">${esc(r.source)}</small></td><td>${esc(r.fields.nric.value)}</td><td>${esc(r.fields.policyNo.value)}</td>
         <td>${!n.check && !n.missing ? chip('ok', 'All good') : (n.missing ? chip('missing', n.missing + ' missing') + ' ' : '') + (n.check ? chip('check', n.check + ' to check') : '')}</td>
         <td>${dup ? `<select data-dup="${i}"><option value="update">Yes – update it</option><option value="new">Add as new</option></select>` : '<span class="hint">New</span>'}</td></tr>`; }).join('')}
       </tbody></table></div>
-      <div class="foot"><button class="btn" data-x>Cancel</button><button class="btn primary" data-add>Add selected</button></div>`, (b, close) => {
+      <div class="foot"><button class="btn" data-x>Cancel</button><button class="btn primary" data-add>${onDone ? 'Save &amp; fill' : 'Add selected'}</button></div>`, (b, close) => {
       b.querySelector('#imAll').onchange = e => b.querySelectorAll('[data-i]').forEach(c => c.checked = e.target.checked);
       b.querySelectorAll('[data-open]').forEach(a => a.onclick = e => {
         e.preventDefault(); const i = +a.dataset.open, rec = recs[i];
         modal(`<h2>${esc(rec.fields.name.value || 'Client')}</h2><div id="ef2"></div><div class="foot"><button class="btn primary" data-done>Done</button></div>`, (b2, close2) => {
           const draw = () => { b2.querySelector('#ef2').innerHTML = fieldInputs(rec); bindOk(b2, rec, draw); }; draw();
-          b2.querySelector('[data-done]').onclick = () => { readInputs(b2, rec); close2(); close(); reviewImport(found); };
+          b2.querySelector('[data-done]').onclick = () => { readInputs(b2, rec); close2(); close(); reviewImport(found, onDone, title); };
         });
       });
-      b.querySelector('[data-x]').onclick = close;
+      b.querySelector('[data-x]').onclick = () => { close(); if (onDone) onDone([]); };
       b.querySelector('[data-add]').onclick = async () => {
         const chosen = [...b.querySelectorAll('[data-i]')].filter(c => c.checked).map(c => +c.dataset.i);
-        let added = 0, updated = 0;
+        let added = 0, updated = 0; const ids = [];
         for (const i of chosen) {
           const r = recs[i], sel = b.querySelector(`[data-dup="${i}"]`), dup = sameAs(r);
           if (dup && (!sel || sel.value === 'update')) {
@@ -255,10 +281,11 @@
             for (const k in r.fields) if (!r.fields[k].value && dup.fields[k] && dup.fields[k].value) r.fields[k] = dup.fields[k];
             r.id = dup.id; updated++;
           } else added++;
-          await S.put('clients', r);
+          await S.put('clients', r); ids.push(r.id);
         }
         close(); await loadClients();
         toast(`${added} added${updated ? `, ${updated} updated` : ''}`);
+        if (onDone) onDone(ids);
       };
     });
   }
@@ -270,7 +297,7 @@
   drop.addEventListener('drop', e => handleClientFiles([...e.dataTransfer.files]));
 
   // ================= 2. FORMS =================
-  async function loadTemplates() { state.templates = (await S.all('templates')).sort((a, b) => a.name.localeCompare(b.name)); }
+  async function loadTemplates() { state.templates = (await S.all('templates')).sort((a, b) => a.name.localeCompare(b.name)); renderAutoTpl(); }
 
   function renderTemplates() {
     $('#tplList').innerHTML = state.templates.length ? state.templates.map(t => `<div class="tplcard"><div class="grow"><b>${esc(t.name)}</b> ${t.builtin ? '<span class="badge">READY-MADE LAYOUT</span>' : ''}<div class="meta">${t.pageCount} page${t.pageCount > 1 ? 's' : ''} · ${t.fields.length} fields · from ${esc(t.fileName || '')}</div></div>
@@ -501,17 +528,25 @@
     if (!tpl) { toast('Set up a form first (step 2).'); return; }
     const recs = state.clients.filter(c => F.picked.has(c.id));
     if (!recs.length) { toast('Tick at least one client.'); return; }
-    const pdf = await S.get('pdfs', tpl.id);
-    const out = $('#fResults'); out.innerHTML = '';
-    for (const rec of recs) out.appendChild(await fillCard(tpl, pdf, rec));
-    if (recs.length > 1) {
+    fillNow([tpl], recs);
+  };
+
+  // Fills every form for every client and shows the previews (Fill tab)
+  async function fillNow(tpls, recs) {
+    if (!tpls.length || !recs.length) return;
+    if (state.tab !== 'fill') { $('#fTpl').dataset.want = tpls[0].id; F.picked = new Set(recs.map(r => r.id)); showTab('fill'); }
+    const out = $('#fResults'); out.innerHTML = `<div class="card empty">Filling ${recs.length * tpls.length} form${recs.length * tpls.length > 1 ? 's' : ''}…</div>`;
+    const cards = [];
+    for (const tpl of tpls) { const pdf = await S.get('pdfs', tpl.id); for (const rec of recs) cards.push(await fillCard(tpl, pdf, rec)); }
+    out.innerHTML = ''; cards.forEach(c => out.appendChild(c));
+    if (cards.length > 1) {
       const bar = document.createElement('div'); bar.className = 'card row';
       bar.innerHTML = `<span class="grow">Download every form you have ticked as checked.</span><button class="btn primary" id="dlAll">Download all checked</button>`;
       out.prepend(bar);
       bar.querySelector('#dlAll').onclick = () => { const btns = [...out.querySelectorAll('[data-dl]:not(:disabled)')]; if (!btns.length) { toast('Tick “I have checked this form” on each one first.'); return; } btns.forEach((b, i) => setTimeout(() => b.click(), i * 400)); };
     }
     out.scrollIntoView({ behavior: 'smooth' });
-  };
+  }
 
   async function fillCard(tpl, pdf, rec) {
     const card = document.createElement('div'); card.className = 'card';

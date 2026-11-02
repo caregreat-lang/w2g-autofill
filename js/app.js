@@ -339,7 +339,8 @@
     const tpl = { id: 't' + Date.now().toString(36), name: f.name.replace(/\.pdf$/i, ''), fileName: f.name, pageCount: doc.numPages, fields: [] };
     const ready = (window.W2G_BUILTIN || []).find(b => b.match.test(f.name) || b.match.test(title));
     if (ready && await confirmBox('Ready-made layout available', `This looks like the <b>${esc(ready.name)}</b> form. Use the ready-made layout? You can still adjust it afterwards.`, 'Use ready-made layout')) {
-      tpl.name = ready.name; tpl.builtin = ready.key; tpl.fields = JSON.parse(JSON.stringify(ready.fields)).map((x, i) => Object.assign({ id: 'f' + i + Date.now().toString(36) }, x));
+      // boxes are found again on this PDF, in case it is a different print of the form
+      tpl.name = ready.name; tpl.builtin = ready.key; tpl.fields = JSON.parse(JSON.stringify(ready.fields)).map((x, i) => { delete x.cells; return Object.assign({ id: 'f' + i + Date.now().toString(36) }, x); });
     }
     openDesigner(tpl, bytes, doc);
   };
@@ -589,8 +590,29 @@
   $('#fDate').onchange = () => { if ($('#fResults').children.length) toast('Press “Fill & preview” again to apply.'); };
 
   // ---------- start ----------
+  // Ready-made forms come with the app: add each one once, so there is nothing to set up.
+  // If you delete one later it is not added back.
+  async function installBuiltins() {
+    let added = 0;
+    for (const b of window.W2G_BUILTIN || []) {
+      const flag = 'w2gaf-installed-' + b.key;
+      let done = false; try { done = localStorage.getItem(flag) === '1'; } catch (e) {}
+      if (done || state.templates.some(t => t.builtin === b.key)) continue;
+      try {
+        const bytes = await (await fetch(b.file)).arrayBuffer();
+        const id = 'b-' + b.key;
+        await S.put('pdfs', bytes, id);
+        await S.put('templates', { id, name: b.name, builtin: b.key, fileName: b.file.split('/').pop(), pageCount: (await pdfjsLib.getDocument({ data: new Uint8Array(bytes.slice(0)) }).promise).numPages, fields: b.fields.map((f, i) => Object.assign({ id: b.key + '-' + i }, JSON.parse(JSON.stringify(f)))) });
+        try { localStorage.setItem(flag, '1'); } catch (e) {}
+        added++;
+      } catch (e) { console.warn('Could not add ready-made form', b.key, e); }
+    }
+    if (added) await loadTemplates();
+  }
+
   (async () => {
     await Promise.all([loadClients(), loadTemplates()]);
+    await installBuiltins();
     if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
     window.W2G = { state, D, showTab, redraw: () => { drawFields(); renderSel(); }, detect, ocrLines }; // for troubleshooting
   })();

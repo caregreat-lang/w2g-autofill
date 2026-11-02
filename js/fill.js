@@ -178,6 +178,13 @@
         }
       }
     }
+    // your own additions on the preview: free text and tick marks (x, y = top-left, in points)
+    for (const x of (opts && opts.extras) || []) {
+      const page = pages[x.page]; if (!page) continue;
+      const H = page.getHeight();
+      if (x.kind === 'tick') page.drawSvgPath('M 0 5 L 4 9 L 11 0', { x: x.x, y: H - x.y, borderColor: ink, borderWidth: 1.8, scale: x.size / 10 });
+      else if (x.text) page.drawText(safeText(font, x.text).text, { x: x.x, y: H - x.y - x.size * 0.8, size: x.size, font, color: ink });
+    }
     doc.setProducer('W2G AutoFill');
     return doc.save();
   }

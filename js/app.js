@@ -516,12 +516,27 @@
   async function renderPdfPages(bytes, pages) {
     const doc = await pdfjsLib.getDocument({ data: new Uint8Array(bytes.slice(0)) }).promise, out = [];
     for (const p of pages) {
-      const page = await doc.getPage(p + 1), vp = page.getViewport({ scale: 1.6 });
+      const page = await doc.getPage(p + 1), vp = page.getViewport({ scale: 1.6 }), vp1 = page.getViewport({ scale: 1 });
       const c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height;
       await page.render({ canvasContext: c.getContext('2d'), viewport: vp, intent: 'print' }).promise;
-      out.push(c.toDataURL('image/jpeg', 0.85));
+      out.push({ p, src: c.toDataURL('image/jpeg', 0.85), w: vp1.width, h: vp1.height });
     }
     return out;
+  }
+
+  // Small pop-up asking for one value. Resolves {value} on Save, {clear:true} on Remove, null on Cancel.
+  function askValue(title, value, opts) {
+    opts = opts || {};
+    return new Promise(res => modal(`<h2>${esc(title)}</h2>${opts.hint ? `<p class="hint">${esc(opts.hint)}</p>` : ''}
+      <input type="text" id="av" value="${esc(value || '')}" style="width:100%;font-size:16px" placeholder="${esc(opts.placeholder || '(left blank)')}">
+      ${opts.sizes ? `<div class="row" style="margin-top:10px">Text size <select id="avs">${[8, 9, 10, 12, 14].map(s => `<option ${s === (opts.size || 10) ? 'selected' : ''}>${s}</option>`).join('')}</select></div>` : ''}
+      <div class="foot">${opts.remove ? `<button class="btn danger" data-rm>${esc(opts.remove)}</button><span class="grow"></span>` : ''}<button class="btn" data-x>Cancel</button><button class="btn primary" data-sv>Save</button></div>`, (b, close) => {
+      const inp = b.querySelector('#av'); setTimeout(() => { inp.focus(); inp.select(); }, 50);
+      const save = () => { close(); res({ value: inp.value.trim(), size: b.querySelector('#avs') ? +b.querySelector('#avs').value : undefined }); };
+      b.querySelector('[data-sv]').onclick = save; inp.onkeydown = e => { if (e.key === 'Enter') save(); };
+      b.querySelector('[data-x]').onclick = () => { close(); res(null); };
+      const rm = b.querySelector('[data-rm]'); if (rm) rm.onclick = () => { close(); res({ clear: true }); };
+    }));
   }
 
   $('#fGo').onclick = async () => {
@@ -551,19 +566,33 @@
 
   async function fillCard(tpl, pdf, rec) {
     const card = document.createElement('div'); card.className = 'card';
-    const overrides = {};
-    const opts = () => ({ overrides, noDate: !$('#fDate').checked });
+    // your edits for this form only: changed values (overrides) and added text / ticks (extras)
+    const overrides = {}, extras = [];
+    let mode = 'edit', pageCount = 0;
+    const opts = () => ({ overrides, extras, noDate: !$('#fDate').checked });
     const fileName = safeName(`${tpl.name} - ${rec.fields.name.value || 'client'}`) + '.pdf';
     let bytes = null;
     async function draw() {
+      const keepY = card.isConnected ? window.scrollY : null; // stay where you were after an edit
       card.innerHTML = `<div class="empty">Filling ${esc(rec.fields.name.value)}…</div>`;
       const rv = await FL.reviewWithFont(PDFLib, tpl, rec, opts());
       bytes = await FL.fillPdf(PDFLib, pdf, tpl, rec, opts());
-      const pages = [...new Set(tpl.fields.map(f => f.page))].sort((a, b) => a - b);
-      const imgs = await renderPdfPages(bytes, pages);
+      if (!pageCount) pageCount = (await pdfjsLib.getDocument({ data: new Uint8Array(bytes.slice(0)) }).promise).numPages;
+      const imgs = await renderPdfPages(bytes, [...Array(pageCount).keys()]);
       const issues = rv.filter(r => r.status !== 'ok' && r.status !== 'blank');
+      const pct = (v, of) => (v / of * 100).toFixed(3) + '%';
+      const pageHtml = im => `<div class="pv" data-p="${im.p}"><img src="${im.src}" alt="Filled page ${im.p + 1}"><div class="pvov">
+        ${rv.filter(r => r.field.page === im.p).map(r => `<div class="hit ${r.status}" data-hit="${r.field.id}" title="${esc(r.label)}" style="left:${pct(r.field.x, im.w)};top:${pct(r.field.y, im.h)};width:${pct(r.field.w, im.w)};height:${pct(r.field.h, im.h)}"></div>`).join('')}
+        ${extras.map((x, i) => x.page !== im.p ? '' : `<div class="xt" data-xt="${i}" style="left:${pct(x.x - 2, im.w)};top:${pct(x.y - 2, im.h)};width:${pct(x.kind === 'tick' ? x.size * 1.2 + 4 : Math.max(20, x.text.length * x.size * 0.55) + 4, im.w)};height:${pct(x.size + 4, im.h)}"></div>`).join('')}
+        </div><span class="pvno">Page ${im.p + 1}</span></div>`;
       card.innerHTML = `<div class="row" style="margin-bottom:10px"><h2 class="grow" style="margin:0">${esc(rec.fields.name.value)} <span class="hint">· ${esc(tpl.name)}</span></h2>${issues.length ? chip('check', issues.length + ' need attention') : chip('ok', 'Ready')}</div>
-        <div class="fillgrid"><div class="preview">${imgs.map((src, i) => `<img src="${src}" alt="Filled page ${pages[i] + 1}">`).join('')}</div>
+        <div class="fillgrid"><div class="preview">
+          <div class="edbar"><div class="seg">
+            <button data-mode="edit" class="${mode === 'edit' ? 'on' : ''}">✏️ Edit values</button>
+            <button data-mode="text" class="${mode === 'text' ? 'on' : ''}">＋ Add text</button>
+            <button data-mode="tick" class="${mode === 'tick' ? 'on' : ''}">✓ Add tick</button></div>
+            <p class="hint" style="margin:6px 0 0"><span class="mtxt">${{ edit: 'Tap any filled box on the page to change it.', text: 'Tap anywhere on the page to type your own text there.', tick: 'Tap a tick box on the page to tick it. Tap a tick again to remove it.' }[mode]}</span>${extras.length ? ` · ${extras.length} addition${extras.length > 1 ? 's' : ''} <a href="#" data-undo>undo last</a>` : ''}</p></div>
+          <div class="pvs mode-${mode}">${imgs.map(pageHtml).join('')}</div></div>
         <div><table class="rv"><thead><tr><th>Field</th><th>Value on the form</th><th></th></tr></thead><tbody>
         ${rv.map(r => `<tr><td>${esc(r.label)}<br><small class="hint">page ${r.field.page + 1}</small></td><td><input type="text" data-f="${r.field.id}" value="${esc(r.value)}" placeholder="(left blank)">${r.note ? `<div class="hint" style="margin:2px 0 0;color:${r.status === 'ok' ? 'var(--muted)' : r.status === 'check' ? 'var(--check)' : 'var(--miss)'}">${esc(r.note)}</div>` : ''}</td><td>${chip(r.status)}</td></tr>`).join('')}
         </tbody></table>
@@ -575,6 +604,33 @@
         </div></div></div>`;
       card.querySelector('[data-upd]').onclick = () => { card.querySelectorAll('input[data-f]').forEach(i => { const r = rv.find(x => x.field.id === i.dataset.f); if (i.value !== r.value) overrides[i.dataset.f] = i.value.trim(); }); draw(); };
       card.querySelectorAll('input[data-f]').forEach(i => i.onkeydown = e => { if (e.key === 'Enter') card.querySelector('[data-upd]').click(); });
+      // ---- editing on the page itself ----
+      card.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => { mode = b.dataset.mode; card.querySelectorAll('[data-mode]').forEach(x => x.classList.toggle('on', x === b)); card.querySelector('.pvs').className = 'pvs mode-' + mode; card.querySelector('.edbar .mtxt').textContent = { edit: 'Tap any filled box on the page to change it.', text: 'Tap anywhere on the page to type your own text there.', tick: 'Tap a tick box on the page to tick it. Tap a tick again to remove it.' }[mode]; });
+      const undo = card.querySelector('[data-undo]'); if (undo) undo.onclick = e => { e.preventDefault(); extras.pop(); draw(); };
+      card.querySelectorAll('.pv').forEach(pv => pv.onclick = async e => {
+        const im = imgs.find(x => x.p === +pv.dataset.p), r = pv.getBoundingClientRect();
+        const x = (e.clientX - r.left) / r.width * im.w, y = (e.clientY - r.top) / r.height * im.h;
+        const hit = e.target.closest('[data-hit]'), xt = e.target.closest('[data-xt]');
+        if (xt) { // one of your own additions
+          const i = +xt.dataset.xt, it = extras[i];
+          if (it.kind === 'tick') { extras.splice(i, 1); return draw(); }
+          const a = await askValue('Edit your text', it.text, { sizes: true, size: it.size, remove: 'Remove' });
+          if (!a) return; if (a.clear || !a.value) extras.splice(i, 1); else Object.assign(it, { text: a.value, size: a.size });
+          return draw();
+        }
+        if (mode === 'tick') { extras.push({ kind: 'tick', page: im.p, x: x - 5, y: y - 5, size: 10 }); return draw(); }
+        if (mode === 'text') {
+          const a = await askValue('Add text to page ' + (im.p + 1), '', { sizes: true, size: 10, placeholder: 'Type the text to put here' });
+          if (a && a.value) { extras.push({ kind: 'text', page: im.p, x, y: y - a.size / 2, size: a.size, text: a.value }); draw(); }
+          return;
+        }
+        if (hit) {
+          const item = rv.find(v => v.field.id === hit.dataset.hit);
+          const a = await askValue(item.label, item.value, { hint: 'Changes this form only — your client list stays the same.', remove: 'Leave blank' });
+          if (!a) return; overrides[item.field.id] = a.clear ? '' : a.value; draw();
+        }
+      });
+      if (keepY != null) window.scrollTo(0, keepY);
       const ok = card.querySelector('[data-ok]'), dl = card.querySelector('[data-dl]'), sh = card.querySelector('[data-share]');
       ok.onchange = () => {
         const dirty = [...card.querySelectorAll('input[data-f]')].some(i => i.value !== rv.find(x => x.field.id === i.dataset.f).value);

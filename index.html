@@ -108,6 +108,18 @@ th{font-size:12px;color:var(--muted);font-weight:600}
 .fillgrid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:16px}
 .preview img{width:100%;max-width:100%;border:1px solid var(--line);margin-bottom:8px;border-radius:4px}
 .rv td input{width:100%}
+.edbar{position:sticky;top:70px;z-index:5;background:#fff;padding:6px 0 8px;margin-bottom:6px}
+.pv{position:relative;margin-bottom:10px;border:1px solid var(--line);border-radius:4px;overflow:hidden}
+.pv img{display:block;margin:0;border:0;border-radius:0}
+.pvov{position:absolute;inset:0}
+.pvno{position:absolute;top:0;left:0;background:var(--brand);color:#fff;font-size:11px;padding:1px 6px;border-radius:0 0 6px 0}
+.hit{position:absolute;border-radius:2px}
+.mode-edit .hit{cursor:pointer;outline:1.5px dashed rgba(201,166,96,.95);background:rgba(214,183,121,.10)}
+.mode-edit .hit:hover{background:rgba(214,183,121,.28)}
+.mode-edit .hit.missing,.mode-edit .hit.overflow{outline-color:rgba(200,55,45,.9);background:rgba(200,55,45,.08)}
+.mode-edit .hit.check{outline-color:rgba(168,111,0,.95)}
+.mode-text .pvov,.mode-tick .pvov{cursor:crosshair}
+.xt{position:absolute;outline:1.5px dashed #2f6fd6;border-radius:2px;cursor:pointer;background:rgba(47,111,214,.06)}
 .rv td{font-size:13px}
 .guide ol{padding-left:20px}
 .guide li{margin-bottom:8px}
@@ -257,7 +269,7 @@ th{font-size:12px;color:var(--muted);font-weight:600}
       <h3>3 · Fill and download (every time)</h3>
       <ol>
         <li>Open <b>Fill &amp; download</b>, choose the form and tick one or more clients, press <b>Fill &amp; preview</b>.</li>
-        <li>Look at the preview. Anything red or amber can be typed in right there (this changes only this form, not your client list).</li>
+        <li>Look at the preview. To change anything, use the buttons above the pages: <b>✏️ Edit values</b> — tap a filled box to change or clear it; <b>＋ Add text</b> — tap anywhere to type your own text (e.g. a withdrawal amount); <b>✓ Add tick</b> — tap a tick box to tick it (tap again to remove). You can also type in the list beside the preview. Edits change only this form, not your client list.</li>
         <li>Tick <b>I have checked this form</b>, then <b>Download PDF</b> (on a phone you can also <b>Share</b> it).</li>
       </ol>
       <div class="box"><b>Left blank on purpose:</b> signatures, witness details and tick-box choices (e.g. withdrawal type, reasons) — the client completes those.</div>

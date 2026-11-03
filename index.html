@@ -12,10 +12,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="AutoFill">
 <style>
-:root{--bg:#F4F5F8;--card:#fff;--ink:#18202F;--muted:#636D82;--line:#E1E5EC;--brand:#14263F;--brand2:#22385A;--gold:#D6B779;--gold2:#B8954D;--soft:#F8F2E4;
+/* Modern Navy & Champagne Gold: navy header #14263F, champagne gold buttons #D6B779, soft grey #F6F7F9, white cards */
+:root{color-scheme:light;--bg:#F6F7F9;--card:#FFFFFF;--ink:#14263F;--muted:#636D82;--line:#E1E5EC;--brand:#14263F;--brand2:#22385A;--gold:#D6B779;--gold2:#B8954D;--soft:#F8F2E4;
 --ok:#1D8A55;--okbg:#E2F4EA;--ck:#9A6500;--ckbg:#FCF0D5;--ms:#B9372D;--msbg:#FAE3E1;--focus:#3B6FD8;--r:12px}
-@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#0F1522;--card:#182132;--ink:#E7EBF2;--muted:#9AA5BA;--line:#2A3548;--soft:#2A2617;
---ok:#5CCB92;--okbg:#173527;--ck:#F0B850;--ckbg:#3A2E12;--ms:#F08378;--msbg:#3D1E1C}}
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 html,body{margin:0}
@@ -38,10 +37,11 @@ h2{font-size:18px;margin:0 0 4px}h3{font-size:15px;margin:0 0 8px}
 p{margin:6px 0}.muted{color:var(--muted)}.small{font-size:13px}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .spacer{flex:1}
-.btn{border:1px solid var(--line);background:var(--card);border-radius:9px;padding:8px 14px;cursor:pointer;font-weight:600;display:inline-flex;align-items:center;gap:6px;min-height:40px}
+.btn{border:1px solid var(--line);background:var(--card);color:var(--brand);border-radius:9px;padding:8px 14px;cursor:pointer;font-weight:600;display:inline-flex;align-items:center;gap:6px;min-height:40px}
 .btn:hover{border-color:var(--gold2)}
-.btn.pri{background:var(--brand);border-color:var(--brand);color:#fff}
-.btn.gold{background:var(--gold);border-color:var(--gold);color:#1b1b1b}
+.btn.pri{background:var(--gold);border-color:var(--gold);color:var(--brand)}
+.btn.pri:hover:not(:disabled),.btn.gold:hover:not(:disabled){background:#CBA962;border-color:#CBA962}
+.btn.gold{background:var(--gold);border-color:var(--gold);color:var(--brand)}
 .btn.danger{color:var(--ms)}
 .btn:disabled{opacity:.45;cursor:not-allowed}
 .btn.sm{min-height:32px;padding:4px 10px;font-size:13px}

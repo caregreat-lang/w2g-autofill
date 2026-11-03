@@ -1,675 +1,635 @@
-// W2G AutoFill - app screens. Client files are read in the browser; nothing leaves the device.
-(function () {
-  'use strict';
-  const P = W2GParse, FL = W2GFill, S = W2GStore;
+/* W2G AutoFill: screens and flow. Clients → Forms → Fill & download. Everything stays on this device. */
+(async function () {
   const $ = s => document.querySelector(s);
-  const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const here = p => new URL(p, location.href).href;
+  const $$ = s => [...document.querySelectorAll(s)];
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const P = W2GParse, FL = W2GFill, S = W2GStore;
+  const LABEL = Object.fromEntries(P.FIELDS);
+  const SRC_LABEL = Object.fromEntries(FL.SOURCES);
+  const CHIP = { ok: 'OK', check: 'Check', missing: 'Missing', toolong: 'Fix' };
+  const chip = st => `<span class="chip ${st}">${CHIP[st] || st}</span>`;
 
   pdfjsLib.GlobalWorkerOptions.workerSrc = 'lib/pdf.worker.min.js';
+  const online = /^https?:$/.test(location.protocol);
+  const libs = {
+    pdfjs: pdfjsLib, XLSX,
+    Tesseract: online && self.Tesseract ? Tesseract : null,
+    tesseractOpts: { workerPath: 'lib/tesseract-worker.min.js', corePath: 'lib/tess-core', langPath: 'lib/tess-lang', gzip: true, cacheMethod: 'none' }
+  };
+  if (online && 'serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 
-  const state = { clients: [], templates: [], tab: 'clients' };
-
-  // ---------- small UI helpers ----------
-  function toast(msg, ms) { const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), ms || 2600); }
-  function modal(html, onMount) {
-    const m = document.createElement('div'); m.className = 'modal'; m.innerHTML = `<div class="box">${html}</div>`;
-    document.body.appendChild(m); const close = () => m.remove();
-    m.addEventListener('click', e => { if (e.target === m) close(); });
-    if (onMount) onMount(m.querySelector('.box'), close);
-    return close;
+  // ---------- small helpers ----------
+  function toast(msg, ms = 2600) {
+    const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg; document.body.appendChild(t);
+    setTimeout(() => t.remove(), ms);
   }
-  function confirmBox(title, body, okLabel, danger) {
-    return new Promise(res => modal(`<h2>${esc(title)}</h2><p>${body}</p><div class="foot"><button class="btn" data-x>Cancel</button><button class="btn ${danger ? 'dark' : 'primary'}" data-ok>${esc(okLabel || 'OK')}</button></div>`,
-      (b, close) => { b.querySelector('[data-x]').onclick = () => { close(); res(false); }; b.querySelector('[data-ok]').onclick = () => { close(); res(true); }; }));
+  function dialog(html, buttons, onOpen) {
+    const d = $('#dlg');
+    $('#dlgBody').innerHTML = html;
+    $('#dlgFoot').innerHTML = buttons.map((b, i) => `<button class="btn ${b.cls || ''}" data-i="${i}">${esc(b.label)}</button>`).join('');
+    return new Promise(res => {
+      const done = v => { d.close(); res(v); };
+      $$('#dlgFoot button').forEach(btn => btn.onclick = () => { const b = buttons[+btn.dataset.i]; done(b.get ? b.get() : b.value); });
+      d.oncancel = e => { e.preventDefault(); done(null); };
+      d.showModal(); onOpen && onOpen(d);
+    });
   }
-  const chip = (status, text) => `<span class="chip ${status}">${esc(text || { ok: 'OK', check: 'Check', missing: 'Missing', overflow: 'Too long', blank: 'Blank' }[status] || status)}</span>`;
-  function counts(rec) {
-    let check = 0, missing = 0;
-    for (const f of P.FIELDS) { const v = rec.fields[f.key]; if (!v) continue; if (v.status === 'check') check++; if (v.status === 'missing' && f.required) missing++; }
-    return { check, missing };
-  }
-  function download(bytes, name, type) {
-    const url = URL.createObjectURL(new Blob([bytes], { type: type || 'application/pdf' }));
-    const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  const confirmBox = (title, body, ok = 'Yes, go ahead', danger = false) =>
+    dialog(`<h2>${esc(title)}</h2><div style="margin-top:8px">${body}</div>`, [{ label: 'Cancel', value: false }, { label: ok, value: true, cls: danger ? 'pri danger' : 'pri' }]);
+  const promptBox = (title, label, initial = '') =>
+    dialog(`<h2>${esc(title)}</h2><label class="f" for="pbIn" style="margin-top:10px">${esc(label)}</label><input id="pbIn" type="text" value="${esc(initial)}">`,
+      [{ label: 'Cancel', value: null }, { label: 'OK', cls: 'pri', get: () => $('#pbIn').value }],
+      () => { const i = $('#pbIn'); i.focus(); i.select(); i.onkeydown = e => { if (e.key === 'Enter') $('#dlgFoot .pri').click(); }; });
+  const b64ToBytes = b => Uint8Array.from(atob(b), c => c.charCodeAt(0));
+  function bytesToB64(u8) { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); }
+  function download(bytes, name, type = 'application/pdf') {
+    const url = URL.createObjectURL(new Blob([bytes], { type }));
+    const a = Object.assign(document.createElement('a'), { href: url, download: name }); document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 30000);
   }
   const safeName = s => String(s).replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const nricKey = c => P.nricDigits(c.fields.nric.value);
+  const toCheck = c => P.FIELDS.filter(([k]) => c.fields[k].status === 'check').length;
+
+  // ---------- data ----------
+  let clients = (await S.all('clients')) || [];
+  let custom = (await S.all('templates')) || [];
+  let settings = (await S.get('settings', 'main')) || { id: 'main', autoFill: 'off' };
+  const builtin = W2GTemplates.BUILTIN;
+  const allTemplates = () => [...builtin, ...custom.sort((a, b) => a.name.localeCompare(b.name))];
+  const tplById = id => allTemplates().find(t => t.id === id);
+  const tplBytes = t => (t.builtin ? b64ToBytes(W2GFormsData[t.pdf]) : new Uint8Array(t.pdfBytes));
+  clients.sort((a, b) => a.fields.name.value.localeCompare(b.fields.name.value));
 
   // ---------- tabs ----------
-  function showTab(t) {
-    state.tab = t;
-    document.querySelectorAll('.tab').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
-    for (const id of ['clients', 'forms', 'fill', 'guide']) $('#tab-' + id).hidden = id !== t;
-    if (t === 'fill') renderFill();
-    if (t === 'forms' && $('#designerView').hidden) renderTemplates();
-    window.scrollTo(0, 0);
+  function showTab(name) {
+    $$('#nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
+    $$('.tab').forEach(t => t.classList.toggle('on', t.id === 'tab-' + name));
+    if (name === 'fill') renderFillPick();
+    if (name === 'forms') renderForms();
+    scrollTo(0, 0);
   }
-  document.querySelectorAll('.tab').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+  $$('#nav button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
 
-  // ================= 1. CLIENTS =================
-  async function loadClients() { state.clients = (await S.all('clients')).sort((a, b) => (a.fields.name.value || '').localeCompare(b.fields.name.value || '')); renderClients(); }
+  // ---------- PDF page rendering ----------
+  // Renders every page of `bytes` into `host`, reusing page boxes so edits don't flicker.
+  async function renderPages(host, bytes, prev) {
+    const doc = await pdfjsLib.getDocument({ data: bytes, isEvalSupported: false }).promise;
+    const width = Math.min(host.clientWidth || 800, 900);
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const pages = [];
+    for (let n = 1; n <= doc.numPages; n++) {
+      const pg = await doc.getPage(n);
+      const base = pg.getViewport({ scale: 1 });
+      const scale = width / base.width;
+      const vp = pg.getViewport({ scale: scale * dpr });
+      const canvas = document.createElement('canvas'); canvas.width = vp.width; canvas.height = vp.height;
+      await pg.render({ canvasContext: canvas.getContext('2d'), viewport: vp, intent: 'print' }).promise; // 'print' draws without waiting for screen frames
+      let box = prev && prev[n - 1] && prev[n - 1].box;
+      if (!box) {
+        box = document.createElement('div'); box.className = 'pagebox'; box.dataset.page = n;
+        box.innerHTML = '<div class="ov"></div>'; host.appendChild(box);
+      }
+      box.style.width = width + 'px';
+      const old = box.querySelector('canvas'); if (old) old.replaceWith(canvas); else box.prepend(canvas);
+      pages.push({ n, box, ov: box.querySelector('.ov'), scale, wPt: base.width, hPt: base.height, pg });
+    }
+    if (prev) for (const p of prev.slice(doc.numPages)) p.box.remove();
+    return pages;
+  }
+  // PDF points ↔ on-screen pixels inside a page box
+  // Marks are placed in % of the page, and clicks are converted with the page's current on-screen width, so a resize never shifts them.
+  const shown = p => p.ov.clientWidth / p.wPt;
+  const toPx = (p, [x, y, w, h]) => ({ left: x / p.wPt * 100, top: (p.hPt - y - h) / p.hPt * 100, width: w / p.wPt * 100, height: h / p.hPt * 100 });
+  const toPt = (p, px, py) => ({ x: px / shown(p), y: p.hPt - py / shown(p) });
+  const place = (el, r, u = '%') => Object.assign(el.style, { left: r.left + u, top: r.top + u, width: r.width + u, height: r.height + u });
+  const fieldRects = fd => (fd.kind === 'text' ? [fd.rect] : fd.cells);
 
-  function renderClients() {
-    const q = ($('#clientSearch').value || '').toLowerCase();
-    const list = state.clients.filter(c => !q || ['name', 'nric', 'policyNo', 'company', 'email'].some(k => (c.fields[k].value || '').toLowerCase().includes(q)));
-    $('#clientCount').textContent = state.clients.length ? `(${state.clients.length})` : '';
-    $('#clientRows').innerHTML = list.length ? list.map(c => {
-      const n = counts(c), F = c.fields;
-      const st = !n.check && !n.missing ? chip('ok', 'All good') : (n.missing ? chip('missing', n.missing + ' missing') + ' ' : '') + (n.check ? chip('check', n.check + ' to check') : '');
-      return `<tr class="clientrow" data-id="${c.id}"><td><b>${esc(F.name.value || '(no name)')}</b><br><small class="hint">${esc(c.source)}</small></td><td class="hide-sm">${esc(F.nric.value)}</td><td>${esc(F.policyNo.value)}</td><td class="hide-sm">${esc(F.accountManager.value)}</td><td>${st}</td><td class="hide-sm"><button class="btn small">Open</button></td></tr>`;
-    }).join('') : `<tr><td colspan="6" class="empty">${state.clients.length ? 'No match.' : 'No clients yet — add a file above.'}</td></tr>`;
-    $('#clientRows').querySelectorAll('tr[data-id]').forEach(tr => tr.onclick = () => editClient(state.clients.find(c => c.id === tr.dataset.id)));
-  }
-  $('#clientSearch').oninput = renderClients;
+  // =====================================================================
+  // 1 · CLIENTS
+  // =====================================================================
+  let review = null; // {items: [{client, dup, action}], notes, errors}
 
-  function fieldInputs(rec) {
-    const nCheck = P.FIELDS.filter(f => rec.fields[f.key] && rec.fields[f.key].status === 'check').length;
-    const bar = nCheck > 1 ? `<div class="row" style="margin-bottom:10px;background:var(--checkbg);padding:8px 10px;border-radius:8px"><span class="grow">${nCheck} details need a quick look. Compare them with the source, then:</span><button class="btn small" data-okall>All look right</button></div>` : '';
-    return bar + `<div class="fields">${P.FIELDS.map(f => {
-      const v = rec.fields[f.key] || { value: '', status: 'missing' };
-      const showMissing = v.status === 'missing' && f.required;
-      const cls = v.status === 'check' ? 'check' : showMissing ? 'missing' : '';
-      return `<div class="fld ${cls}" data-k="${f.key}"><label><span>${esc(f.label)}</span>${v.status === 'check' ? chip('check') : showMissing ? chip('missing') : ''}</label>
-        <input type="text" value="${esc(v.value)}" data-k="${f.key}">
-        ${v.status === 'check' ? `<div class="note">${esc(v.note || 'Please confirm')} <button class="btn small" data-ok="${f.key}">Looks right</button></div>` : showMissing ? '<div class="note missing">Not in the file — will be left blank on forms</div>' : v.note ? `<div class="note" style="color:var(--good)">${esc(v.note)}</div>` : ''}</div>`;
-    }).join('')}</div>`;
+  function renderAutoFill() {
+    $('#autoFill').innerHTML = `<option value="off">Off (just save)</option>` + allTemplates().map(t => `<option value="${t.id}">${esc(t.short || t.name)}</option>`).join('');
+    $('#autoFill').value = tplById(settings.autoFill) ? settings.autoFill : 'off';
   }
-  // reads edits back into the record: anything you type yourself counts as confirmed
-  function readInputs(box, rec) {
-    box.querySelectorAll('input[data-k]').forEach(inp => {
-      const k = inp.dataset.k, cur = rec.fields[k], val = inp.value.trim();
-      if (val === (cur.value || '')) return;
-      rec.fields[k] = val ? { value: val, status: 'ok', note: 'Edited by you' } : { value: '', status: 'missing' };
-    });
-    P.crossCheck(rec);
-  }
-  function bindOk(box, rec, rerender) {
-    box.querySelectorAll('[data-ok]').forEach(b => b.onclick = () => { readInputs(box, rec); const f = rec.fields[b.dataset.ok]; f.status = 'ok'; f.note = 'Confirmed by you'; rerender(); });
-    const all = box.querySelector('[data-okall]');
-    if (all) all.onclick = () => { readInputs(box, rec); for (const k in rec.fields) if (rec.fields[k].status === 'check') { rec.fields[k].status = 'ok'; rec.fields[k].note = 'Confirmed by you'; } rerender(); };
+  $('#autoFill').onchange = async e => { settings.autoFill = e.target.value; await S.put('settings', settings); };
+
+  const drop = $('#drop');
+  drop.onclick = () => $('#fileIn').click();
+  drop.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('#fileIn').click(); } };
+  drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+  drop.ondragleave = () => drop.classList.remove('over');
+  drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); readFiles([...e.dataTransfer.files]); };
+  $('#fileIn').onchange = e => { readFiles([...e.target.files]); e.target.value = ''; };
+
+  async function readFiles(files) {
+    if (!files.length) return;
+    const bar = $('#readProgress'), fillBar = bar.firstElementChild; bar.hidden = false;
+    const found = [], notes = [], errors = [];
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      fillBar.style.width = (i / files.length * 100) + '%';
+      try {
+        const bytes = new Uint8Array(await f.arrayBuffer());
+        const r = await P.readFile(f.name, bytes, libs, p => { fillBar.style.width = ((i + p) / files.length * 100) + '%'; });
+        if (r.error) errors.push(`<b>${esc(f.name)}</b>: ${esc(r.error)}`);
+        r.notes.forEach(n => notes.push(`<b>${esc(f.name)}</b>: ${esc(n)}`));
+        found.push(...r.clients);
+      } catch (e) {
+        console.error(e); errors.push(`<b>${esc(f.name)}</b>: could not be opened (${esc(e.message || e)}).`);
+      }
+    }
+    bar.hidden = true; fillBar.style.width = '0';
+    // Same person + same policy as a saved client (or earlier in this batch) → ask before changing.
+    const items = [];
+    for (const c of found) {
+      const k = nricKey(c), pol = c.fields.policyNo.value, nm = c.fields.name.value;
+      const same = x => (k ? nricKey(x) === k : x.fields.name.value === nm && !nricKey(x)) && x.fields.policyNo.value === pol;
+      const dup = clients.find(same);
+      const batchDup = items.find(it => same(it.client));
+      items.push({ client: c, dup, action: batchDup ? 'skip' : dup ? 'update' : 'add', batchDup: !!batchDup });
+    }
+    review = { items, notes, errors };
+    renderReview();
   }
 
-  function editClient(rec, isNew) {
-    rec = JSON.parse(JSON.stringify(rec));
-    modal(`<h2>${isNew ? 'New client' : esc(rec.fields.name.value || 'Client')}</h2><p class="hint">From: ${esc(rec.source)}. Amber = please confirm, red = missing (stays blank on forms).</p><div id="ef"></div>
-      <div class="foot">${isNew ? '' : '<button class="btn danger" data-del>Delete client</button><span class="grow"></span>'}<button class="btn" data-x>Cancel</button><button class="btn primary" data-save>Save</button></div>`, (b, close) => {
-      const draw = () => { b.querySelector('#ef').innerHTML = fieldInputs(rec); bindOk(b, rec, draw); };
-      draw();
-      b.querySelector('[data-x]').onclick = close;
-      b.querySelector('[data-save]').onclick = async () => { readInputs(b, rec); await S.put('clients', rec); close(); toast('Client saved'); loadClients(); };
-      const del = b.querySelector('[data-del]');
-      if (del) del.onclick = async () => { if (await confirmBox('Delete this client?', `<b>${esc(rec.fields.name.value)}</b> will be removed from this device. This cannot be undone.`, 'Delete', true)) { await S.del('clients', rec.id); close(); toast('Client deleted'); loadClients(); } };
-    });
+  function cell(c, k) {
+    const v = c.fields[k];
+    if (v.status === 'missing') return `<td>${chip('missing')}${v.note ? `<span class="nt">${esc(v.note)}</span>` : ''}</td>`;
+    return `<td><span class="v">${esc(v.value)} ${v.status !== 'ok' ? chip(v.status) : ''}</span>${v.note ? `<span class="nt">${esc(v.note)}</span>` : ''}</td>`;
   }
-  $('#addManual').onclick = () => editClient(P.makeRecord({}, 'Typed in by you'), true);
-  $('#clearClients').onclick = async () => {
-    if (!state.clients.length) return;
-    if (await confirmBox('Remove all clients?', `All ${state.clients.length} client records will be deleted from this device. Your form templates are kept. This cannot be undone.`, 'Delete all', true)) { await S.clear('clients'); loadClients(); toast('All client data removed'); }
+  const COLS = ['nric', 'dob', 'phone', 'email', 'company', 'accountManager', 'policyNo', 'policyStatus'];
+
+  function renderReview() {
+    const r = review; $('#review').hidden = !r;
+    if (!r) return;
+    $('#reviewNotes').innerHTML = r.notes.join('<br>');
+    $('#reviewErrs').innerHTML = r.errors.map(e => `<div class="err">${e}</div>`).join('');
+    const n = a => r.items.filter(i => i.action === a).length;
+    $('#reviewCount').textContent = r.items.length ? `${r.items.length} found · ${n('add')} new · ${n('update')} update · ${n('skip')} skip` : '';
+    $('#reviewTable').innerHTML = r.items.length ? `<thead><tr><th>Action</th><th>Name</th>${COLS.map(k => `<th>${esc(LABEL[k])}</th>`).join('')}<th>From</th></tr></thead><tbody>` +
+      r.items.map((it, i) => `<tr class="${it.dup || it.batchDup ? 'dup' : ''}"><td>${it.dup || it.batchDup
+        ? `<select data-i="${i}" class="ract" style="min-width:150px"><option value="update" ${it.action === 'update' ? 'selected' : ''} ${it.dup ? '' : 'disabled'}>Update saved client</option><option value="add" ${it.action === 'add' ? 'selected' : ''}>Add as new</option><option value="skip" ${it.action === 'skip' ? 'selected' : ''}>Skip</option></select><span class="nt">${it.batchDup ? 'Same as another row in these files' : 'Already in your list'}</span>`
+        : `<select data-i="${i}" class="ract"><option value="add" selected>Add</option><option value="skip">Skip</option></select>`}</td>
+        <td><a href="#" data-i="${i}" class="redit"><b>${esc(it.client.fields.name.value || '(no name)')}</b></a>${it.client.fields.name.status !== 'ok' ? ' ' + chip(it.client.fields.name.status) : ''}</td>
+        ${COLS.map(k => cell(it.client, k)).join('')}<td class="small muted">${esc(it.client.source)}</td></tr>`).join('') + '</tbody>'
+      : '';
+    $$('.ract').forEach(s => s.onchange = () => { r.items[+s.dataset.i].action = s.value; renderReview(); });
+    $$('.redit').forEach(a => a.onclick = async e => { e.preventDefault(); const it = r.items[+a.dataset.i]; if (await editClient(it.client)) renderReview(); });
+    $('#reviewSave').disabled = !r.items.some(i => i.action !== 'skip');
+    $('#review').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  $('#reviewCancel').onclick = () => { review = null; renderReview(); };
+  $('#reviewSave').onclick = async () => {
+    const adds = review.items.filter(i => i.action === 'add'), ups = review.items.filter(i => i.action === 'update' && i.dup);
+    const body = `<p>${adds.length ? `Add <b>${adds.length}</b> new client${adds.length > 1 ? 's' : ''}.` : ''} ${ups.length ? `Update <b>${ups.length}</b> saved client${ups.length > 1 ? 's' : ''}: ${ups.map(u => esc(u.dup.fields.name.value)).join(', ')}. New details replace the old ones; details missing from the new file are kept.` : ''}</p>` +
+      (review.items.some(i => i.action !== 'skip' && toCheck(i.client)) ? '<p class="small muted">Details marked Check are saved as they are. You can still fix them before filling a form.</p>' : '');
+    if (!await confirmBox('Save these clients?', body, 'Save')) return;
+    const saved = [];
+    for (const it of adds) { await S.put('clients', it.client); clients.push(it.client); saved.push(it.client); }
+    for (const it of ups) {
+      const old = it.dup;
+      for (const [k] of P.FIELDS) {
+        const nv = it.client.fields[k], ov = old.fields[k];
+        if (nv.status !== 'missing' && (nv.value !== ov.value || ov.status === 'missing')) old.fields[k] = nv; // same value: keep the earlier (maybe confirmed) one
+      }
+      old.source = it.client.source; old.updated = new Date().toISOString();
+      await S.put('clients', old); saved.push(old);
+    }
+    clients.sort((a, b) => a.fields.name.value.localeCompare(b.fields.name.value));
+    review = null; renderReview(); renderClients();
+    toast(`Saved ${saved.length} client${saved.length > 1 ? 's' : ''}.`);
+    const t = tplById(settings.autoFill);
+    if (t && saved.length) { showTab('fill'); $('#fillForm').value = t.id; fillPicked = new Set(saved.map(c => c.id)); renderFillPick(); startPreview(); }
   };
 
-  // ---- reading files ----
-  const logLine = (html) => { const d = document.createElement('div'); d.innerHTML = html; $('#importLog').appendChild(d); return d; };
-
-  async function pdfLines(data, onOcr) {
-    const doc = await pdfjsLib.getDocument({ data }).promise;
-    let items = [], off = 0;
-    for (let p = 1; p <= doc.numPages; p++) {
-      const page = await doc.getPage(p), vp = page.getViewport({ scale: 1 });
-      (await page.getTextContent()).items.forEach(i => items.push({ s: i.str, x: i.transform[4], y: off + vp.height - i.transform[5], w: i.width }));
-      off += vp.height + 20;
-    }
-    if (items.filter(i => i.s.trim()).length > 5) return P.toLines(items);
-    // scanned PDF: no text layer -> read the page pictures
-    onOcr && onOcr();
-    let lines = [];
-    for (let p = 1; p <= Math.min(doc.numPages, 5); p++) {
-      const page = await doc.getPage(p), vp = page.getViewport({ scale: 2.5 });
-      const c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height;
-      await page.render({ canvasContext: c.getContext('2d'), viewport: vp, intent: 'print' }).promise;
-      lines = lines.concat(await ocrLines(c, p * 100000));
-    }
-    return lines;
+  async function editClient(c, isSaved) {
+    const rows = P.FIELDS.map(([k, lab]) => {
+      const v = c.fields[k];
+      return `<div class="lab">${esc(lab)} ${v.status !== 'ok' ? chip(v.status) : ''}</div><div><input type="text" data-k="${k}" value="${esc(v.value)}">${v.note ? `<div class="small muted">${esc(v.note)}</div>` : ''}</div>`;
+    }).join('');
+    const ok = await dialog(`<h2>${esc(c.fields.name.value || 'Client')}</h2><p class="small muted">Fix or confirm any detail. Saving marks what you typed as checked.</p><div class="ef" style="margin-top:10px">${rows}</div>`,
+      [{ label: 'Cancel', value: false }, { label: isSaved ? 'Save changes' : 'Done', value: true, cls: 'pri' }]);
+    if (!ok) return false;
+    // Values must be read before the dialog content is replaced; dialog() resolves after close, inputs still exist.
+    $$('#dlgBody input[data-k]').forEach(inp => {
+      const k = inp.dataset.k, v = c.fields[k], nv = inp.value.trim();
+      if (nv === v.value && v.status !== 'check') return;
+      if (!nv) c.fields[k] = { value: '', status: 'missing', note: '' };
+      else c.fields[k] = { value: nv, status: 'ok', note: nv === v.value ? 'Confirmed by you.' : 'Typed by you.' };
+    });
+    if (isSaved) { c.updated = new Date().toISOString(); await S.put('clients', c); }
+    return true;
   }
 
-  let ocrWorker = null;
-  async function getOcr() {
-    if (!ocrWorker) {
-      if (location.protocol === 'file:') throw new Error('Reading pictures needs the app opened with "Start W2G AutoFill" or from the web link (not by double-clicking index.html).');
-      ocrWorker = await Tesseract.createWorker('eng', 1, { workerPath: here('lib/worker.min.js'), corePath: here('lib/tess-core'), langPath: here('lib/tess-lang'), workerBlobURL: false, gzip: true });
-    }
-    return ocrWorker;
-  }
-  // Whitens long straight lines (table borders) so OCR reads the text between them cleanly
-  function removeLines(canvas) {
-    const g = canvas.getContext('2d'), W = canvas.width, H = canvas.height, im = g.getImageData(0, 0, W, H), d = im.data;
-    const dark = new Uint8Array(W * H);
-    for (let i = 0; i < W * H; i++) dark[i] = d[i * 4] * 0.3 + d[i * 4 + 1] * 0.59 + d[i * 4 + 2] * 0.11 < 205 ? 1 : 0;
-    const minRun = Math.max(60, Math.round(W * 0.06)), kill = new Uint8Array(W * H);
-    for (let y = 0; y < H; y++) { let s = -1; for (let x = 0; x <= W; x++) { const v = x < W && dark[y * W + x]; if (v && s < 0) s = x; if (!v && s >= 0) { if (x - s >= minRun) for (let k = s; k < x; k++) kill[y * W + k] = 1; s = -1; } } }
-    for (let x = 0; x < W; x++) { let s = -1; for (let y = 0; y <= H; y++) { const v = y < H && dark[y * W + x]; if (v && s < 0) s = y; if (!v && s >= 0) { if (y - s >= minRun * 0.5) for (let k = s; k < y; k++) kill[k * W + x] = 1; s = -1; } } }
-    for (let i = 0; i < W * H; i++) if (kill[i]) { d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = 255; }
-    g.putImageData(im, 0, 0);
-    return canvas;
-  }
-  async function ocrLines(image, yOff) {
-    const w = await getOcr();
-    const { data } = await w.recognize(removeLines(image));
-    const items = [];
-    // words close together belong to one cell ("Mobile No"); a wide gap starts the next column
-    for (const line of data.lines || []) {
-      let cur = null;
-      for (const wd of line.words) {
-        if (wd.confidence < 30 || !wd.text.trim()) continue;
-        const cw = (wd.bbox.x1 - wd.bbox.x0) / Math.max(1, wd.text.length);
-        if (cur && wd.bbox.x0 - cur.x1 < cw * 1.6) { cur.s += ' ' + wd.text; cur.x1 = wd.bbox.x1; }
-        else { cur && items.push(cur); cur = { s: wd.text, x: wd.bbox.x0, x1: wd.bbox.x1, y: (yOff || 0) + (wd.bbox.y0 + wd.bbox.y1) / 2 }; }
-      }
-      cur && items.push(cur);
-    }
-    items.forEach(i => { i.w = i.x1 - i.x; delete i.x1; });
-    // OCR pixels are ~3x PDF points: scale so the layout helpers' tolerances still fit
-    const k = image.width ? 595 / image.width * 1.4 : 1;
-    return P.toLines(items.map(i => ({ s: i.s, x: i.x * k, y: i.y * k, w: i.w * k })), 4);
-  }
-  async function imageToCanvas(file) {
-    const bmp = await createImageBitmap(file);
-    const k = bmp.width < 1000 ? 3 : bmp.width < 1600 ? 2 : 1; // small screenshots read better when enlarged
-    const c = document.createElement('canvas'); c.width = bmp.width * k; c.height = bmp.height * k;
-    const g = c.getContext('2d'); g.imageSmoothingQuality = 'high'; g.drawImage(bmp, 0, 0, c.width, c.height);
-    return c;
-  }
-
-  async function readClientFile(file) {
-    const name = file.name, ext = (name.split('.').pop() || '').toLowerCase();
-    const line = logLine(`⏳ Reading <b>${esc(name)}</b>…`);
-    try {
-      let res;
-      if (['xlsx', 'xls', 'csv'].includes(ext)) {
-        const wb = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true });
-        let all = [], err = '', info = [];
-        for (const sn of wb.SheetNames) {
-          const rows = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: true, defval: '' });
-          const r = P.parseRows(rows, `${name} · ${sn}`);
-          if (r.records.length) { all = all.concat(r.records); info.push({ sheet: sn, header: r.header, map: r.map, rows, headerRow: r.headerRow }); } else err = err || r.error;
-        }
-        res = { records: all, kind: 'customer list', error: all.length ? '' : err, sheets: info };
-      } else if (ext === 'pdf' || file.type === 'application/pdf') {
-        const lines = await pdfLines(new Uint8Array(await file.arrayBuffer()), () => { line.innerHTML = `⏳ <b>${esc(name)}</b> is a scanned PDF — reading the text from the picture (first time may take ~20 s)…`; });
-        res = P.parseLines(lines, name);
-      } else if (/^image\//.test(file.type) || ['png', 'jpg', 'jpeg', 'webp'].includes(ext)) {
-        line.innerHTML = `⏳ Reading text from picture <b>${esc(name)}</b> (first time may take ~20 s)…`;
-        res = P.parseLines(await ocrLines(await imageToCanvas(file)), name);
-        res.records.forEach(r => { for (const k in r.fields) if (r.fields[k].status === 'ok' && r.fields[k].value) { r.fields[k].status = 'check'; r.fields[k].note = 'Read from a picture - please confirm'; } });
-      } else { line.innerHTML = `⚠️ <b>${esc(name)}</b>: this file type is not supported. Use PDF, Excel, CSV, PNG or JPG.`; return null; }
-      res.records.forEach(r => { if (!r.source || r.source === 'ePartner printout') r.source = `${name} (${res.kind})`; });
-      line.innerHTML = res.records.length ? `✅ <b>${esc(name)}</b>: found ${res.records.length} client${res.records.length > 1 ? 's' : ''} (${esc(res.kind)})` : `⚠️ <b>${esc(name)}</b>: ${esc(res.error || 'no client details found')}`;
-      return Object.assign(res, { file: name });
-    } catch (e) {
-      console.error(e); line.innerHTML = `❌ <b>${esc(name)}</b>: could not read this file (${esc(e.message || e)})`; return null;
-    }
-  }
-
-  // the client already in the list that this record describes (same NRIC + policy, or same name + birthday)
-  const sameAs = rec => state.clients.find(c => {
-    const a = (rec.fields.nric.value || '').replace(/\D/g, ''), b = (c.fields.nric.value || '').replace(/\D/g, '');
-    if (a && b) return a === b && (!rec.fields.policyNo.value || !c.fields.policyNo.value || rec.fields.policyNo.value === c.fields.policyNo.value);
-    return rec.fields.name.value && rec.fields.name.value === c.fields.name.value && rec.fields.dob.value === c.fields.dob.value;
-  });
-
-  // ---- auto-fill choice (remembered on this device) ----
-  const AUTO_KEY = 'w2gaf-autofill';
-  // no choice made yet -> auto-fill is on for all forms
-  const getAuto = () => { try { const v = localStorage.getItem(AUTO_KEY); return v === null ? '*' : v; } catch (e) { return '*'; } };
-  function renderAutoTpl() {
-    const cur = getAuto(), sel = $('#autoTpl');
-    sel.innerHTML = state.templates.length
-      ? `<option value="">Off — just save the clients</option>${state.templates.length > 1 ? `<option value="*" ${cur === '*' ? 'selected' : ''}>All my forms (${state.templates.length})</option>` : ''}${state.templates.map(t => `<option value="${t.id}" ${t.id === cur || (cur === '*' && state.templates.length === 1) ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}`
-      : '<option value="">Set up a form in step 2 first</option>';
-    sel.disabled = !state.templates.length;
-  }
-  $('#autoTpl').onchange = () => { try { localStorage.setItem(AUTO_KEY, $('#autoTpl').value); } catch (e) {} };
-  const autoTemplates = () => { const v = $('#autoTpl').value; return v === '*' ? state.templates : state.templates.filter(t => t.id === v); };
-
-  async function handleClientFiles(files) {
-    if (!files.length) return;
-    $('#importLog').innerHTML = '';
-    const found = [];
-    for (const f of files) { const r = await readClientFile(f); if (r && r.records.length) found.push(r); }
-    if (!found.length) return;
-    const tpls = autoTemplates();
-    if (!tpls.length) { reviewImport(found); return; }
-    // Auto-fill: new clients are saved straight away; updating a client already in the list still asks first
-    const recs = found.flatMap(r => r.records), fresh = recs.filter(r => !sameAs(r)), dups = recs.filter(r => sameAs(r));
-    for (const r of fresh) await S.put('clients', r);
-    await loadClients();
-    if (fresh.length) toast(`${fresh.length} client${fresh.length > 1 ? 's' : ''} saved — filling the form now`);
-    const go = ids => fillNow(tpls, state.clients.filter(c => ids.includes(c.id)));
-    if (dups.length) reviewImport([{ records: dups }], ids => go(fresh.map(r => r.id).concat(ids)), 'Already in your list — update before filling?');
-    else go(fresh.map(r => r.id));
-  }
-
-  // Shows what was found and asks before adding / updating anything. onDone(savedIds) runs after Add (or Cancel, with []).
-  function reviewImport(found, onDone, title) {
-    const recs = found.flatMap(r => r.records);
-    const sheetMaps = found.flatMap(r => r.sheets || []);
-    const mapHtml = sheetMaps.map(s => `<p class="hint" style="margin:6px 0">Columns read from <b>${esc(s.sheet)}</b>: ${s.header.map((h, i) => h === '' ? '' : `${esc(h)} → ${s.map[i] ? '<b>' + esc(P.FIELDS.find(f => f.key === s.map[i]).label) + '</b>' : '<i>not used</i>'}`).filter(Boolean).join(' · ')}</p>`).join('');
-    modal(`<h2>${esc(title || `Found ${recs.length} client${recs.length > 1 ? 's' : ''}`)}</h2>
-      <p class="hint">Nothing is saved until you press Add. Open any row to correct it first.</p>${mapHtml}
-      <div class="tablewrap"><table><thead><tr><th><input type="checkbox" id="imAll" checked></th><th>Name</th><th>NRIC</th><th>Policy</th><th>Data check</th><th>Already in list?</th></tr></thead><tbody>
-      ${recs.map((r, i) => { const n = counts(r), dup = sameAs(r); return `<tr><td><input type="checkbox" data-i="${i}" checked></td><td><a href="#" data-open="${i}"><b>${esc(r.fields.name.value || '(no name)')}</b></a><br><small class="hint">${esc(r.source)}</small></td><td>${esc(r.fields.nric.value)}</td><td>${esc(r.fields.policyNo.value)}</td>
-        <td>${!n.check && !n.missing ? chip('ok', 'All good') : (n.missing ? chip('missing', n.missing + ' missing') + ' ' : '') + (n.check ? chip('check', n.check + ' to check') : '')}</td>
-        <td>${dup ? `<select data-dup="${i}"><option value="update">Yes – update it</option><option value="new">Add as new</option></select>` : '<span class="hint">New</span>'}</td></tr>`; }).join('')}
-      </tbody></table></div>
-      <div class="foot"><button class="btn" data-x>Cancel</button><button class="btn primary" data-add>${onDone ? 'Save &amp; fill' : 'Add selected'}</button></div>`, (b, close) => {
-      b.querySelector('#imAll').onchange = e => b.querySelectorAll('[data-i]').forEach(c => c.checked = e.target.checked);
-      b.querySelectorAll('[data-open]').forEach(a => a.onclick = e => {
-        e.preventDefault(); const i = +a.dataset.open, rec = recs[i];
-        modal(`<h2>${esc(rec.fields.name.value || 'Client')}</h2><div id="ef2"></div><div class="foot"><button class="btn primary" data-done>Done</button></div>`, (b2, close2) => {
-          const draw = () => { b2.querySelector('#ef2').innerHTML = fieldInputs(rec); bindOk(b2, rec, draw); }; draw();
-          b2.querySelector('[data-done]').onclick = () => { readInputs(b2, rec); close2(); close(); reviewImport(found, onDone, title); };
-        });
-      });
-      b.querySelector('[data-x]').onclick = () => { close(); if (onDone) onDone([]); };
-      b.querySelector('[data-add]').onclick = async () => {
-        const chosen = [...b.querySelectorAll('[data-i]')].filter(c => c.checked).map(c => +c.dataset.i);
-        let added = 0, updated = 0; const ids = [];
-        for (const i of chosen) {
-          const r = recs[i], sel = b.querySelector(`[data-dup="${i}"]`), dup = sameAs(r);
-          if (dup && (!sel || sel.value === 'update')) {
-            // keep what you confirmed before when the new file has nothing better
-            for (const k in r.fields) if (!r.fields[k].value && dup.fields[k] && dup.fields[k].value) r.fields[k] = dup.fields[k];
-            r.id = dup.id; updated++;
-          } else added++;
-          await S.put('clients', r); ids.push(r.id);
-        }
-        close(); await loadClients();
-        toast(`${added} added${updated ? `, ${updated} updated` : ''}`);
-        if (onDone) onDone(ids);
-      };
+  function renderClients() {
+    const q = $('#clientSearch').value.trim().toLowerCase();
+    const list = clients.filter(c => !q || [c.fields.name.value, c.fields.nric.value, c.fields.policyNo.value, c.fields.company.value, c.fields.phone.value].join(' ').toLowerCase().includes(q));
+    $('#clientCount').textContent = clients.length ? `(${clients.length})` : '';
+    $('#clearAll').hidden = !clients.length;
+    $('#clientTable').innerHTML = !clients.length ? '<tr><td class="empty">No clients yet. Drop a file above to start.</td></tr>'
+      : `<thead><tr><th>Name</th>${COLS.map(k => `<th>${esc(LABEL[k])}</th>`).join('')}<th></th></tr></thead><tbody>` +
+      list.map(c => `<tr><td><b>${esc(c.fields.name.value || '(no name)')}</b>${toCheck(c) ? ` <span class="chip check">${toCheck(c)} to check</span>` : ''}<span class="nt small muted">${esc(c.source)}</span></td>${COLS.map(k => cell(c, k)).join('')}
+        <td style="white-space:nowrap"><button class="btn sm cedit" data-id="${c.id}">Edit</button> <button class="btn sm danger cdel" data-id="${c.id}" aria-label="Delete">✕</button></td></tr>`).join('') + '</tbody>';
+    $$('.cedit').forEach(b => b.onclick = async () => { const c = clients.find(x => x.id === b.dataset.id); if (await editClient(c, true)) { renderClients(); toast('Saved.'); } });
+    $$('.cdel').forEach(b => b.onclick = async () => {
+      const c = clients.find(x => x.id === b.dataset.id);
+      if (!await confirmBox('Delete this client?', `<p><b>${esc(c.fields.name.value)}</b> ${esc(c.fields.policyNo.value)} will be removed from this device. Forms you already downloaded are not affected.</p>`, 'Delete', true)) return;
+      await S.del('clients', c.id); clients = clients.filter(x => x !== c); renderClients(); toast('Deleted.');
     });
   }
+  $('#clientSearch').oninput = renderClients;
+  $('#clearAll').onclick = async () => {
+    if (!await confirmBox('Clear all clients?', `<p>All <b>${clients.length}</b> clients will be removed from this device. This can't be undone. Your forms stay.</p>`, 'Clear all', true)) return;
+    await S.clear('clients'); clients = []; renderClients(); toast('All clients cleared.');
+  };
+  $('#tplXlsx').onclick = () => {
+    const ws = XLSX.utils.aoa_to_sheet([['Customer Name', 'NRIC', 'Company', 'Birthday', 'Phone', 'Email', 'Account Manager', 'Policy No']]);
+    ws['!cols'] = [28, 16, 24, 12, 14, 26, 20, 14].map(w => ({ wch: w }));
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Clients');
+    XLSX.writeFile(wb, 'W2G AutoFill - client list template.xlsx');
+  };
 
-  const drop = $('#clientDrop');
-  $('#clientFiles').onchange = e => { handleClientFiles([...e.target.files]); e.target.value = ''; };
-  ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
-  ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
-  drop.addEventListener('drop', e => handleClientFiles([...e.dataTransfer.files]));
-
-  // ================= 2. FORMS =================
-  async function loadTemplates() { state.templates = (await S.all('templates')).sort((a, b) => a.name.localeCompare(b.name)); renderAutoTpl(); }
-
-  function renderTemplates() {
-    $('#tplList').innerHTML = state.templates.length ? state.templates.map(t => `<div class="tplcard"><div class="grow"><b>${esc(t.name)}</b> ${t.builtin ? '<span class="badge">READY-MADE LAYOUT</span>' : ''}<div class="meta">${t.pageCount} page${t.pageCount > 1 ? 's' : ''} · ${t.fields.length} fields · from ${esc(t.fileName || '')}</div></div>
-      <button class="btn small primary" data-use="${t.id}">Fill</button><button class="btn small" data-edit="${t.id}">Edit layout</button><button class="btn small" data-exp="${t.id}">Export</button><button class="btn small danger" data-del="${t.id}">Delete</button></div>`).join('')
-      : '<div class="empty">No forms yet. Start with “New form from blank PDF”.</div>';
-    const T = id => state.templates.find(t => t.id === id);
-    $('#tplList').querySelectorAll('[data-use]').forEach(b => b.onclick = () => { $('#fTpl').dataset.want = b.dataset.use; showTab('fill'); });
-    $('#tplList').querySelectorAll('[data-edit]').forEach(b => b.onclick = async () => openDesigner(JSON.parse(JSON.stringify(T(b.dataset.edit))), await S.get('pdfs', b.dataset.edit)));
-    $('#tplList').querySelectorAll('[data-exp]').forEach(b => b.onclick = async () => {
-      const t = T(b.dataset.exp), pdf = await S.get('pdfs', t.id);
-      let bin = ''; const u = new Uint8Array(pdf); for (let i = 0; i < u.length; i += 0x8000) bin += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
-      download(JSON.stringify({ w2gAutofillTemplate: 1, template: t, pdf: btoa(bin) }), safeName(t.name) + '.w2g-template.json', 'application/json');
-      toast('Template file saved — import it on your phone or another PC');
+  // =====================================================================
+  // 2 · FORMS
+  // =====================================================================
+  function renderForms() {
+    $('#formsHome').hidden = !$('#builder').hidden;
+    $('#formTable').innerHTML = `<thead><tr><th>Form</th><th>Fields</th><th></th></tr></thead><tbody>` + allTemplates().map(t => `<tr>
+      <td><b>${esc(t.name)}</b>${t.builtin ? '<span class="tag">BUILT IN</span>' : ''}</td><td>${t.fields.length}</td>
+      <td style="white-space:nowrap"><button class="btn sm fview" data-id="${t.id}">${t.builtin ? 'View layout' : 'Edit'}</button>
+      <button class="btn sm fexp" data-id="${t.id}">Export</button>${t.builtin ? '' : ` <button class="btn sm danger fdel" data-id="${t.id}" aria-label="Delete">✕</button>`}</td></tr>`).join('') + '</tbody>';
+    $$('.fview').forEach(b => b.onclick = () => openBuilder(tplById(b.dataset.id)));
+    $$('.fexp').forEach(b => b.onclick = () => {
+      const t = tplById(b.dataset.id);
+      const json = JSON.stringify({ w2gTemplate: 1, name: t.name, fields: t.fields, pdf: bytesToB64(tplBytes(t)) });
+      download(new TextEncoder().encode(json), safeName(t.name) + '.w2g.json', 'application/json');
     });
-    $('#tplList').querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
-      const t = T(b.dataset.del);
-      if (await confirmBox('Delete this form template?', `<b>${esc(t.name)}</b> and its layout will be removed. Your clients are not affected. This cannot be undone.`, 'Delete', true)) { await S.del('templates', t.id); await S.del('pdfs', t.id); await loadTemplates(); renderTemplates(); toast('Template deleted'); }
+    $$('.fdel').forEach(b => b.onclick = async () => {
+      const t = tplById(b.dataset.id);
+      if (!await confirmBox('Delete this form?', `<p><b>${esc(t.name)}</b> and its layout will be removed from this device. Your clients stay.</p>`, 'Delete', true)) return;
+      await S.del('templates', t.id); custom = custom.filter(x => x.id !== t.id); renderForms(); renderAutoFill(); toast('Form deleted.');
     });
   }
-
-  $('#importTpl').onchange = async e => {
+  $('#newForm').onclick = () => $('#newFormIn').click();
+  $('#newFormIn').onchange = async e => {
+    const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+    const bytes = new Uint8Array(await f.arrayBuffer());
+    openBuilder({ id: 't' + Date.now().toString(36), name: f.name.replace(/\.pdf$/i, ''), pdfBytes: bytes, fields: [], isNew: true });
+  };
+  $('#importTpl').onclick = () => $('#importIn').click();
+  $('#importIn').onchange = async e => {
     const f = e.target.files[0]; e.target.value = ''; if (!f) return;
     try {
       const j = JSON.parse(await f.text());
-      if (!j.w2gAutofillTemplate) throw new Error('not a W2G AutoFill template file');
-      const t = j.template, bytes = Uint8Array.from(atob(j.pdf), c => c.charCodeAt(0)).buffer;
-      if (state.templates.find(x => x.id === t.id) && !(await confirmBox('Replace existing template?', `You already have <b>${esc(t.name)}</b>. Replace it with the imported one?`, 'Replace'))) return;
-      await S.put('pdfs', bytes, t.id); await S.put('templates', t); await loadTemplates(); renderTemplates(); toast('Template imported');
-    } catch (err) { toast('Could not import: ' + err.message, 4000); }
+      if (!j.w2gTemplate || !j.pdf || !Array.isArray(j.fields)) throw new Error('not a W2G template file');
+      const same = allTemplates().find(t => t.name === j.name);
+      if (same && same.builtin) { toast('That form is already built in.'); return; }
+      if (same && !await confirmBox('Replace this form?', `<p>You already have <b>${esc(j.name)}</b>. Replace its layout with the imported one?</p>`, 'Replace')) return;
+      const t = { id: same ? same.id : 't' + Date.now().toString(36), name: j.name, short: j.name, pdfBytes: b64ToBytes(j.pdf), fields: j.fields, created: new Date().toISOString() };
+      await S.put('templates', t); custom = custom.filter(x => x.id !== t.id).concat(t); renderForms(); renderAutoFill(); toast('Form imported.');
+    } catch (err) { dialog(`<h2>Can't import</h2><p>${esc(f.name)} is not a W2G AutoFill template file.</p>`, [{ label: 'OK', value: 1, cls: 'pri' }]); }
   };
 
-  $('#blankPdf').onchange = async e => {
-    const f = e.target.files[0]; e.target.value = ''; if (!f) return;
-    const bytes = await f.arrayBuffer();
-    let doc;
-    try { doc = await pdfjsLib.getDocument({ data: new Uint8Array(bytes.slice(0)) }).promise; } catch (err) { toast('This PDF could not be opened.', 4000); return; }
-    const meta = await doc.getMetadata().catch(() => ({}));
-    const title = (meta.info && meta.info.Title) || '';
-    const tpl = { id: 't' + Date.now().toString(36), name: f.name.replace(/\.pdf$/i, ''), fileName: f.name, pageCount: doc.numPages, fields: [] };
-    const ready = (window.W2G_BUILTIN || []).find(b => b.match.test(f.name) || b.match.test(title));
-    if (ready && await confirmBox('Ready-made layout available', `This looks like the <b>${esc(ready.name)}</b> form. Use the ready-made layout? You can still adjust it afterwards.`, 'Use ready-made layout')) {
-      // boxes are found again on this PDF, in case it is a different print of the form
-      tpl.name = ready.name; tpl.builtin = ready.key; tpl.fields = JSON.parse(JSON.stringify(ready.fields)).map((x, i) => { delete x.cells; return Object.assign({ id: 'f' + i + Date.now().toString(36) }, x); });
-    }
-    openDesigner(tpl, bytes, doc);
+  // --- builder ---
+  let B = null; // {t, pages, fields, hiRes: {}, readOnly}
+  function sourceOptions() {
+    return FL.SOURCES.map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('') + '<option value="fixed">Fixed text (same every time)…</option>';
+  }
+  $('#bSource').innerHTML = sourceOptions();
+  $('#bSource').onchange = () => { $('#bFixed').hidden = $('#bSource').value !== 'fixed'; if ($('#bSource').value === 'muslim') { $('#bKind').value = 'tick'; $('#bKind').onchange(); } };
+  $('#bKind').onchange = () => {
+    const k = $('#bKind').value; $('#bWhenWrap').hidden = k !== 'tick';
+    $('#bHint').textContent = k === 'boxes' ? 'For boxes, drag around the whole row of boxes. The app finds each box itself.' : k === 'tick' ? 'Drag around the tick box.' : 'Drag over the line or box where the text should go.';
   };
 
-  // ---------- designer ----------
-  const D = { tpl: null, bytes: null, doc: null, pages: [], sel: null, mode: 'text', source: 'name' };
-  const SCALE = 2.2; // render resolution (px per point) used for box detection
-
-  function sourceOptions(sel) {
-    const groups = {}; FL.SOURCES.forEach(s => (groups[s.group] = groups[s.group] || []).push(s));
-    return Object.entries(groups).map(([g, list]) => `<optgroup label="${g}">${list.map(s => `<option value="${s.key}" ${s.key === sel ? 'selected' : ''}>${esc(s.label)}</option>`).join('')}</optgroup>`).join('');
+  async function openBuilder(t) {
+    B = { t, fields: JSON.parse(JSON.stringify(t.fields)), hiRes: {}, readOnly: !!t.builtin };
+    $('#builder').hidden = false; $('#formsHome').hidden = true;
+    $('#bTitle').textContent = t.builtin ? 'Form layout' : t.isNew ? 'New form' : 'Edit form';
+    $('#bName').value = t.name; $('#bName').disabled = B.readOnly;
+    $('#bTools').hidden = B.readOnly; $('#bSave').hidden = B.readOnly;
+    $('#bMsg').textContent = B.readOnly ? '' : 'Pick what goes here, then drag on the page.';
+    $('#bPages').innerHTML = '';
+    B.bytes = tplBytes(t);
+    B.pages = await renderPages($('#bPages'), B.bytes.slice());
+    B.pages.forEach(p => bindDrag(p));
+    drawMarks(); updatePageLabel();
+    if (B.readOnly) $('#bMsg').textContent = '';
+  }
+  $('#bClose').onclick = async () => {
+    if (B && !B.readOnly && JSON.stringify(B.fields) !== JSON.stringify(B.t.fields) && !await confirmBox('Close without saving?', '<p>The fields you added since the last save will be lost.</p>', 'Close', true)) return;
+    B = null; $('#builder').hidden = true; renderForms();
+  };
+  function updatePageLabel() { $('#bPage').textContent = B ? `${B.pages.length} page${B.pages.length > 1 ? 's' : ''}` : ''; }
+  $('#bPrev').onclick = () => jumpPage(-1); $('#bNext').onclick = () => jumpPage(1);
+  function jumpPage(d) {
+    if (!B) return;
+    const cur = B.pages.findIndex(p => p.box.getBoundingClientRect().bottom > 120);
+    const t = B.pages[Math.max(0, Math.min(B.pages.length - 1, (cur < 0 ? 0 : cur) + d))];
+    t.box.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
-  async function openDesigner(tpl, bytes, doc) {
-    D.tpl = tpl; D.bytes = bytes; D.sel = null;
-    D.doc = doc || await pdfjsLib.getDocument({ data: new Uint8Array(bytes.slice(0)) }).promise;
-    $('#formsHome').hidden = true; $('#designerView').hidden = false;
-    $('#dName').value = tpl.name;
-    $('#dSource').innerHTML = sourceOptions(D.source);
-    $('#dPreviewClient').innerHTML = '<option value="">— sample text —</option>' + state.clients.map(c => `<option value="${c.id}">${esc(c.fields.name.value)}</option>`).join('');
-    const wrap = $('#dPages'); wrap.innerHTML = '<div class="empty">Loading pages…</div>';
-    D.pages = [];
-    for (let p = 1; p <= D.doc.numPages; p++) {
-      const page = await D.doc.getPage(p), vp1 = page.getViewport({ scale: 1 }), vp = page.getViewport({ scale: SCALE });
-      const c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height;
-      await page.render({ canvasContext: c.getContext('2d'), viewport: vp, intent: 'print' }).promise;
-      D.pages.push({ w: vp1.width, h: vp1.height, canvas: c, img: null });
-    }
-    wrap.innerHTML = '';
-    D.pages.forEach((pg, i) => {
-      const pw = document.createElement('div'); pw.className = 'pagewrap'; pw.style.width = Math.min(900, pg.w * 1.5) + 'px';
-      pw.appendChild(pg.canvas);
-      const ov = document.createElement('div'); ov.className = 'ov'; ov.dataset.p = i; pw.appendChild(ov);
-      const no = document.createElement('div'); no.className = 'pno'; no.textContent = 'Page ' + (i + 1); pw.appendChild(no);
-      wrap.appendChild(pw); pg.ov = ov; bindDraw(ov, i);
-    });
-    // fields from a ready-made layout: find their boxes on this PDF
-    for (const f of D.tpl.fields) if (f.mode === 'boxes' && !(f.cells && f.cells.length)) f.cells = detect(f);
-    drawFields(); renderSel();
-  }
-
-  function pageImg(i) { const pg = D.pages[i]; if (!pg.img) pg.img = pg.canvas.getContext('2d').getImageData(0, 0, pg.canvas.width, pg.canvas.height); return pg.img; }
-  function detect(f) { return FL.detectCells(pageImg(f.page), SCALE, f); }
-
-  function bindDraw(ov, pi) {
-    let start = null, box = null;
-    const pt = e => { const r = ov.getBoundingClientRect(), pg = D.pages[pi]; return { x: (e.clientX - r.left) / r.width * pg.w, y: (e.clientY - r.top) / r.height * pg.h, r }; };
-    ov.addEventListener('pointerdown', e => {
-      if (e.target.closest('.fbox')) return; // clicking a field selects it
-      if (e.pointerType === 'touch' && !e.isPrimary) return;
-      start = pt(e); ov.setPointerCapture(e.pointerId);
-      box = document.createElement('div'); box.className = 'drawing'; ov.appendChild(box);
-      e.preventDefault();
-    });
-    ov.addEventListener('pointermove', e => {
-      if (!start) return; const p = pt(e), pg = D.pages[pi];
-      const x = Math.min(start.x, p.x), y = Math.min(start.y, p.y), w = Math.abs(p.x - start.x), h = Math.abs(p.y - start.y);
-      Object.assign(box.style, { left: x / pg.w * 100 + '%', top: y / pg.h * 100 + '%', width: w / pg.w * 100 + '%', height: h / pg.h * 100 + '%' });
-    });
-    ov.addEventListener('pointerup', e => {
-      if (!start) return; const p = pt(e); box.remove();
-      const f = { id: 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), page: pi, x: Math.min(start.x, p.x), y: Math.min(start.y, p.y), w: Math.abs(p.x - start.x), h: Math.abs(p.y - start.y), source: $('#dSource').value, mode: D.mode };
-      start = null;
-      if (f.w < 6 || f.h < 4) { D.sel = null; drawFields(); renderSel(); return; }
-      ['x', 'y', 'w', 'h'].forEach(k => f[k] = +f[k].toFixed(2));
-      if (f.source === 'custom') f.text = $('#dCustom').value;
-      if (f.mode === 'boxes') { f.cells = detect(f); if (!f.cells.length) { f.mode = 'text'; toast('No boxes found there — added as normal text. Try covering the whole row of boxes.', 4000); } else toast(`${f.cells.length} boxes found`); }
-      D.tpl.fields.push(f); D.sel = f.id; drawFields(); renderSel();
-    });
-  }
-
-  function previewRec() { const id = $('#dPreviewClient').value; return id ? state.clients.find(c => c.id === id) : null; }
-  function sampleValue(f) {
-    const rec = previewRec();
-    if (rec || f.source === 'custom' || f.source.startsWith('today')) return FL.valueFor(f, rec || { fields: {} }).value;
-    return FL.SOURCE_LABEL[f.source].replace(/\s*\(.*\)|DD\/MM\/YYYY|DDMMYYYY/g, '').trim().toUpperCase();
-  }
-
-  function drawFields() {
-    D.pages.forEach(pg => pg.ov.querySelectorAll('.fbox').forEach(n => n.remove()));
-    for (const f of D.tpl.fields) {
-      const pg = D.pages[f.page]; if (!pg) continue;
-      const el = document.createElement('div'); el.className = 'fbox' + (f.id === D.sel ? ' sel' : '');
-      Object.assign(el.style, { left: f.x / pg.w * 100 + '%', top: f.y / pg.h * 100 + '%', width: f.w / pg.w * 100 + '%', height: f.h / pg.h * 100 + '%' });
-      const pxPerPt = pg.ov.getBoundingClientRect().width / pg.w;
-      const val = sampleValue(f);
-      if (f.mode === 'boxes') {
-        const lay = FL.layoutBoxes(f, val);
-        const at = new Map(lay.placed.map(p => [p.cell, p.ch]));
-        for (const c of f.cells || []) {
-          const ce = document.createElement('div'); ce.className = 'cell';
-          Object.assign(ce.style, { left: (c.x - f.x) / f.w * 100 + '%', top: (c.y - f.y) / f.h * 100 + '%', width: c.w / f.w * 100 + '%', height: c.h / f.h * 100 + '%', fontSize: Math.min(c.h * 0.62, c.w * 0.95, 11) * pxPerPt + 'px' });
-          ce.textContent = at.get(c) || ''; el.appendChild(ce);
-        }
-        if (lay.overflow) el.style.borderColor = '#c8372d';
-      } else {
-        const t = document.createElement('div'); t.className = 'txt'; t.textContent = val;
-        t.style.fontSize = (f.size || Math.min(10, f.h * 0.72)) * pxPerPt + 'px'; el.appendChild(t);
+  function drawMarks(focusId) {
+    for (const p of B.pages) {
+      p.ov.innerHTML = '';
+      for (const fd of B.fields.filter(f => f.page === p.n)) {
+        for (const r of fieldRects(fd)) { const m = document.createElement('div'); m.className = fd.kind === 'text' ? 'textmark' : 'cellmark'; place(m, toPx(p, r)); p.ov.appendChild(m); }
+        const r0 = toPx(p, fieldRects(fd)[0]); const lab = document.createElement('div'); lab.className = 'marklabel'; lab.textContent = fd.label;
+        lab.style.left = r0.left + '%'; lab.style.top = r0.top + '%'; if (fd.id === focusId) lab.style.background = '#3B6FD8'; p.ov.appendChild(lab);
       }
-      const tag = document.createElement('div'); tag.className = 'tag'; tag.textContent = (f.source === 'custom' ? 'Fixed: ' + (f.text || '') : FL.SOURCE_LABEL[f.source]) + (f.mode === 'boxes' ? ` · ${(f.cells || []).length} boxes` : '');
-      el.appendChild(tag);
-      el.onpointerdown = e => { e.stopPropagation(); D.sel = f.id; drawFields(); renderSel(); };
-      pg.ov.appendChild(el);
     }
-    $('#dCount').textContent = `(${D.tpl.fields.length})`;
-    $('#dList').innerHTML = D.tpl.fields.length ? D.tpl.fields.slice().sort((a, b) => a.page - b.page || a.y - b.y).map(f => `<div data-f="${f.id}" class="${f.id === D.sel ? 'sel' : ''}">${esc(f.source === 'custom' ? 'Fixed: ' + (f.text || '') : FL.SOURCE_LABEL[f.source])}<small>p.${f.page + 1}${f.mode === 'boxes' ? ' · boxes' : ''}</small></div>`).join('') : '<p class="hint">None yet.</p>';
-    $('#dList').querySelectorAll('[data-f]').forEach(d => d.onclick = () => { D.sel = d.dataset.f; drawFields(); renderSel(); const f = selField(); D.pages[f.page].ov.querySelector('.fbox.sel').scrollIntoView({ block: 'center', behavior: 'smooth' }); });
+    $('#bCount').textContent = `(${B.fields.length})`;
+    $('#bFields').innerHTML = B.fields.length ? B.fields.map((fd, i) => `<div class="fitem ${fd.id === focusId ? 'focus' : ''}"><div class="top"><span>${esc(fd.label)}</span><span class="small muted">p.${fd.page} · ${fd.kind === 'boxes' ? fd.cells.length + ' boxes' : fd.kind}${B.readOnly ? '' : ` <button class="btn sm danger bdel" data-i="${i}" aria-label="Remove">✕</button>`}</span></div></div>`).join('')
+      : '<p class="small muted">No fields yet.</p>';
+    $$('.bdel').forEach(b => b.onclick = () => { B.fields.splice(+b.dataset.i, 1); drawMarks(); });
   }
-  const selField = () => D.tpl.fields.find(f => f.id === D.sel);
 
-  function renderSel() {
-    const f = selField(); $('#dSel').hidden = !f;
-    if (!f) return;
-    $('#sSource').innerHTML = sourceOptions(f.source);
-    $('#sCustomWrap').hidden = f.source !== 'custom'; $('#sCustom').value = f.text || '';
-    $('#sMode').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.m === f.mode));
-    $('#sSize').value = f.size || 0; $('#sSizeV').textContent = f.size ? f.size + ' pt' : 'auto';
-    $('#sInfo').textContent = f.mode === 'boxes' ? `${(f.cells || []).length} boxes found on page ${f.page + 1}.` : `Normal text on page ${f.page + 1}. Long values shrink to fit.`;
+  // Grayscale copy of a page at 3× for finding boxes (made once per page).
+  async function hiRes(p) {
+    if (B.hiRes[p.n]) return B.hiRes[p.n];
+    const SC = 3, vp = p.pg.getViewport({ scale: SC });
+    const c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height;
+    const ctx = c.getContext('2d', { willReadFrequently: true }); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+    await p.pg.render({ canvasContext: ctx, viewport: vp, intent: 'print' }).promise;
+    return (B.hiRes[p.n] = { g: W2GBoxes.toGray(ctx.getImageData(0, 0, c.width, c.height)), W: c.width, H: c.height, SC });
   }
-  $('#dMode').querySelectorAll('button').forEach(b => b.onclick = () => { D.mode = b.dataset.m; $('#dMode').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); });
-  $('#dSource').onchange = () => { D.source = $('#dSource').value; $('#dCustomWrap').hidden = D.source !== 'custom'; };
-  $('#sSource').onchange = () => { const f = selField(); f.source = $('#sSource').value; drawFields(); renderSel(); };
-  $('#sCustom').oninput = () => { const f = selField(); f.text = $('#sCustom').value; drawFields(); };
-  $('#sMode').querySelectorAll('button').forEach(b => b.onclick = () => {
-    const f = selField(); f.mode = b.dataset.m;
-    if (f.mode === 'boxes') { f.cells = detect(f); if (!f.cells.length) { f.mode = 'text'; toast('No boxes found inside this field.'); } } else delete f.cells;
-    drawFields(); renderSel();
-  });
-  $('#sSize').oninput = () => { const f = selField(); f.size = +$('#sSize').value || undefined; drawFields(); renderSel(); };
-  $('#sDel').onclick = () => { D.tpl.fields = D.tpl.fields.filter(f => f.id !== D.sel); D.sel = null; drawFields(); renderSel(); };
-  $('#sDup').onclick = () => {
-    const f = selField(); let n = 0;
-    D.pages.forEach((pg, i) => { if (i === f.page) return; const c = Object.assign({}, f, { id: f.id + 'p' + i, page: i }); delete c.cells; if (c.mode === 'boxes') { c.cells = detect(c); if (!c.cells.length) return; } D.tpl.fields.push(c); n++; });
-    drawFields(); toast(n ? `Copied to ${n} other page${n > 1 ? 's' : ''} (only where the same boxes exist)` : 'No matching boxes on the other pages');
-  };
-  $('#dPreviewClient').onchange = drawFields;
-  window.addEventListener('resize', () => { if (!$('#designerView').hidden) drawFields(); });
-  document.addEventListener('keydown', e => {
-    if ($('#designerView').hidden || !D.sel || /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;
-    const f = selField(), d = e.shiftKey ? 2 : 0.5, mv = { ArrowLeft: [-d, 0], ArrowRight: [d, 0], ArrowUp: [0, -d], ArrowDown: [0, d] }[e.key];
-    if (mv) { e.preventDefault(); f.x += mv[0]; f.y += mv[1]; (f.cells || []).forEach(c => { c.x += mv[0]; c.y += mv[1]; }); drawFields(); }
-    if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); $('#sDel').click(); }
-  });
-  $('#dBack').onclick = async () => { if (await confirmBox('Leave without saving?', 'Changes to this layout since you last saved will be lost.', 'Leave')) closeDesigner(); };
-  function closeDesigner() { $('#designerView').hidden = true; $('#formsHome').hidden = false; renderTemplates(); }
-  $('#dSave').onclick = async () => {
-    D.tpl.name = $('#dName').value.trim() || D.tpl.name;
-    if (!D.tpl.fields.length) { toast('Add at least one field first.'); return; }
-    const exists = state.templates.find(t => t.id === D.tpl.id);
-    if (exists && !(await confirmBox('Save changes?', `This replaces the saved layout of <b>${esc(D.tpl.name)}</b>.`, 'Save'))) return;
-    D.tpl.savedAt = new Date().toISOString();
-    await S.put('pdfs', D.bytes, D.tpl.id); await S.put('templates', D.tpl);
-    await loadTemplates(); closeDesigner(); toast('Template saved');
-  };
 
-  // ================= 3. FILL =================
-  const F = { picked: new Set() };
-  function renderFill() {
-    const want = $('#fTpl').dataset.want || $('#fTpl').value;
-    $('#fTpl').innerHTML = state.templates.length ? state.templates.map(t => `<option value="${t.id}" ${t.id === want ? 'selected' : ''}>${esc(t.name)}</option>`).join('') : '<option value="">No forms yet — set one up in step 2</option>';
-    delete $('#fTpl').dataset.want;
-    const q = ($('#fSearch').value || '').toLowerCase();
-    const list = state.clients.filter(c => !q || ['name', 'nric', 'policyNo'].some(k => (c.fields[k].value || '').toLowerCase().includes(q)));
-    $('#fClients').innerHTML = list.length ? list.map(c => { const n = counts(c); return `<label class="row" style="padding:7px 10px;border-bottom:1px solid var(--line);gap:8px"><input type="checkbox" data-c="${c.id}" ${F.picked.has(c.id) ? 'checked' : ''}><b>${esc(c.fields.name.value || '(no name)')}</b><span class="hint" style="margin:0">${esc(c.fields.policyNo.value || c.fields.nric.value)}</span><span class="grow"></span>${n.missing ? chip('missing', n.missing + ' missing') : ''}${n.check ? chip('check', n.check + ' to check') : ''}</label>`; }).join('')
-      : `<div class="empty">${state.clients.length ? 'No match.' : 'No clients yet — add them in step 1.'}</div>`;
-    $('#fClients').querySelectorAll('[data-c]').forEach(cb => cb.onchange = () => { cb.checked ? F.picked.add(cb.dataset.c) : F.picked.delete(cb.dataset.c); selInfo(); });
-    selInfo();
+  function bindDrag(p) {
+    let start = null, sel = null;
+    const pos = e => { const r = p.ov.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+    p.ov.style.touchAction = 'none'; p.box.classList.add('add');
+    p.ov.onpointerdown = e => {
+      if (!B || B.readOnly) return;
+      start = pos(e); p.ov.setPointerCapture(e.pointerId);
+      sel = document.createElement('div'); sel.className = 'sel'; p.ov.appendChild(sel);
+    };
+    p.ov.onpointermove = e => {
+      if (!start) return; const q = pos(e);
+      place(sel, { left: Math.min(start.x, q.x), top: Math.min(start.y, q.y), width: Math.abs(q.x - start.x), height: Math.abs(q.y - start.y) }, 'px');
+    };
+    p.ov.onpointerup = async e => {
+      if (!start) return; const q = pos(e), s = start; start = null; sel.remove();
+      const L = Math.min(s.x, q.x), T = Math.min(s.y, q.y), Wd = Math.abs(q.x - s.x), Ht = Math.abs(q.y - s.y);
+      if (Wd < 6 || Ht < 6) { $('#bMsg').textContent = 'Drag a box over the space (press, move, release).'; return; }
+      await addField(p, L, T, Wd, Ht);
+    };
   }
-  function selInfo() { $('#fSelInfo').textContent = F.picked.size ? `${F.picked.size} client${F.picked.size > 1 ? 's' : ''} selected` : ''; }
-  $('#fSearch').oninput = renderFill;
-  $('#fAll').onclick = () => { const boxes = [...$('#fClients').querySelectorAll('[data-c]')]; const all = boxes.every(b => b.checked); boxes.forEach(b => { b.checked = !all; !all ? F.picked.add(b.dataset.c) : F.picked.delete(b.dataset.c); }); selInfo(); };
 
-  async function renderPdfPages(bytes, pages) {
-    const doc = await pdfjsLib.getDocument({ data: new Uint8Array(bytes.slice(0)) }).promise, out = [];
-    for (const p of pages) {
-      const page = await doc.getPage(p + 1), vp = page.getViewport({ scale: 1.6 }), vp1 = page.getViewport({ scale: 1 });
-      const c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height;
-      await page.render({ canvasContext: c.getContext('2d'), viewport: vp, intent: 'print' }).promise;
-      out.push({ p, src: c.toDataURL('image/jpeg', 0.85), w: vp1.width, h: vp1.height });
+  async function addField(p, L, T, Wd, Ht) {
+    let source = $('#bSource').value, kind = $('#bKind').value;
+    if (source === 'fixed') { const v = $('#bFixed').value.trim(); if (!v) { $('#bMsg').textContent = 'Type the fixed text first.'; return; } source = 'fixed:' + v; }
+    const label = source.startsWith('fixed:') ? `"${source.slice(6)}"` : SRC_LABEL[source];
+    const a = toPt(p, L, T + Ht), b = toPt(p, L + Wd, T); // bottom-left, top-right in points
+    const rect = [a.x, a.y, b.x - a.x, b.y - a.y].map(v => +v.toFixed(1));
+    const fd = { id: 'f' + Date.now().toString(36), label, page: p.n, kind, source };
+    if (kind === 'text') fd.rect = rect;
+    else {
+      const H = await hiRes(p);
+      const k = H.SC / shown(p);
+      const cells = W2GBoxes.detectCells(H.g, H.W, H.H, { x: L * k, y: T * k, w: Wd * k, h: Ht * k })
+        .map(c => [c.x / H.SC, p.hPt - (c.y + c.h) / H.SC, c.w / H.SC, c.h / H.SC].map(v => +v.toFixed(1)));
+      if (kind === 'boxes') {
+        if (!cells.length) { $('#bMsg').textContent = 'No boxes found there. Drag around the boxes only, or choose "Normal text".'; return; }
+        fd.cells = cells;
+      } else {
+        fd.when = $('#bWhen').value.trim() || 'Yes';
+        fd.cells = cells.length ? [cells[0]] : [[+(rect[0] + rect[2] / 2 - 4).toFixed(1), +(rect[1] + rect[3] / 2 - 4).toFixed(1), 8, 8]];
+        fd.label = `${label} = ${fd.when}`;
+      }
     }
-    return out;
+    B.fields.push(fd);
+    $('#bMsg').textContent = kind === 'boxes' ? `Found ${fd.cells.length} boxes for ${label}.` : `Added ${fd.label}.`;
+    drawMarks(fd.id);
   }
 
-  // Small pop-up asking for one value. Resolves {value} on Save, {clear:true} on Remove, null on Cancel.
-  function askValue(title, value, opts) {
-    opts = opts || {};
-    return new Promise(res => modal(`<h2>${esc(title)}</h2>${opts.hint ? `<p class="hint">${esc(opts.hint)}</p>` : ''}
-      <input type="text" id="av" value="${esc(value || '')}" style="width:100%;font-size:16px" placeholder="${esc(opts.placeholder || '(left blank)')}">
-      ${opts.sizes ? `<div class="row" style="margin-top:10px">Text size <select id="avs">${[8, 9, 10, 12, 14].map(s => `<option ${s === (opts.size || 10) ? 'selected' : ''}>${s}</option>`).join('')}</select></div>` : ''}
-      <div class="foot">${opts.remove ? `<button class="btn danger" data-rm>${esc(opts.remove)}</button><span class="grow"></span>` : ''}<button class="btn" data-x>Cancel</button><button class="btn primary" data-sv>Save</button></div>`, (b, close) => {
-      const inp = b.querySelector('#av'); setTimeout(() => { inp.focus(); inp.select(); }, 50);
-      const save = () => { close(); res({ value: inp.value.trim(), size: b.querySelector('#avs') ? +b.querySelector('#avs').value : undefined }); };
-      b.querySelector('[data-sv]').onclick = save; inp.onkeydown = e => { if (e.key === 'Enter') save(); };
-      b.querySelector('[data-x]').onclick = () => { close(); res(null); };
-      const rm = b.querySelector('[data-rm]'); if (rm) rm.onclick = () => { close(); res({ clear: true }); };
-    }));
-  }
-
-  $('#fGo').onclick = async () => {
-    const tpl = state.templates.find(t => t.id === $('#fTpl').value);
-    if (!tpl) { toast('Set up a form first (step 2).'); return; }
-    const recs = state.clients.filter(c => F.picked.has(c.id));
-    if (!recs.length) { toast('Tick at least one client.'); return; }
-    fillNow([tpl], recs);
+  $('#bSave').onclick = async () => {
+    const name = $('#bName').value.trim();
+    if (!name) { $('#bMsg').textContent = 'Give the form a name first.'; $('#bName').focus(); return; }
+    if (!B.fields.length) { $('#bMsg').textContent = 'Add at least one field first.'; return; }
+    const same = allTemplates().find(t => t.name.toLowerCase() === name.toLowerCase() && t.id !== B.t.id);
+    if (same && same.builtin) { $('#bMsg').textContent = 'That name is used by a built-in form. Pick another name.'; return; }
+    if (same && !await confirmBox('Replace this form?', `<p>You already have a form called <b>${esc(name)}</b>. Replace it with this one?</p>`, 'Replace')) return;
+    if (!B.t.isNew && !same && !await confirmBox('Save changes to this form?', `<p>The layout of <b>${esc(name)}</b> will be updated. Forms you already downloaded are not affected.</p>`, 'Save')) return;
+    const t = { id: same ? same.id : B.t.id, name, short: name, pdfBytes: B.bytes, fields: B.fields, created: B.t.created || new Date().toISOString() };
+    if (same) { await S.del('templates', B.t.id); custom = custom.filter(x => x.id !== B.t.id); }
+    await S.put('templates', t); custom = custom.filter(x => x.id !== t.id).concat(t);
+    B.t = t; toast('Form saved.'); renderAutoFill();
+    B = null; $('#builder').hidden = true; renderForms();
   };
 
-  // Fills every form for every client and shows the previews (Fill tab)
-  async function fillNow(tpls, recs) {
-    if (!tpls.length || !recs.length) return;
-    if (state.tab !== 'fill') { $('#fTpl').dataset.want = tpls[0].id; F.picked = new Set(recs.map(r => r.id)); showTab('fill'); }
-    const out = $('#fResults'); out.innerHTML = `<div class="card empty">Filling ${recs.length * tpls.length} form${recs.length * tpls.length > 1 ? 's' : ''}…</div>`;
-    const cards = [];
-    for (const tpl of tpls) { const pdf = await S.get('pdfs', tpl.id); for (const rec of recs) cards.push(await fillCard(tpl, pdf, rec)); }
-    out.innerHTML = ''; cards.forEach(c => out.appendChild(c));
-    if (cards.length > 1) {
-      const bar = document.createElement('div'); bar.className = 'card row';
-      bar.innerHTML = `<span class="grow">Download every form you have ticked as checked.</span><button class="btn primary" id="dlAll">Download all checked</button>`;
-      out.prepend(bar);
-      bar.querySelector('#dlAll').onclick = () => { const btns = [...out.querySelectorAll('[data-dl]:not(:disabled)')]; if (!btns.length) { toast('Tick “I have checked this form” on each one first.'); return; } btns.forEach((b, i) => setTimeout(() => b.click(), i * 400)); };
-    }
-    out.scrollIntoView({ behavior: 'smooth' });
+  // =====================================================================
+  // 3 · FILL & DOWNLOAD
+  // =====================================================================
+  let fillPicked = new Set();
+  function renderFillPick() {
+    const sel = $('#fillForm'), cur = sel.value;
+    sel.innerHTML = allTemplates().map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join('');
+    if (tplById(cur)) sel.value = cur;
+    const q = $('#fillSearch').value.trim().toLowerCase();
+    const list = clients.filter(c => !q || [c.fields.name.value, c.fields.nric.value, c.fields.policyNo.value].join(' ').toLowerCase().includes(q));
+    $('#fillClients').innerHTML = !clients.length ? '<div class="empty">No clients yet. Add some in step 1.</div>'
+      : list.map(c => `<label><input type="checkbox" data-id="${c.id}" ${fillPicked.has(c.id) ? 'checked' : ''}><span style="flex:1"><b>${esc(c.fields.name.value)}</b> <span class="small muted">${esc(c.fields.nric.value)} · ${esc(c.fields.policyNo.value || 'no policy no.')}${c.fields.plan.value ? ' · ' + esc(c.fields.plan.value) : ''}</span></span>${c.fields.policyStatus.status === 'check' ? `<span class="chip check">${esc(c.fields.policyStatus.value)}</span>` : ''}</label>`).join('');
+    $$('#fillClients input').forEach(i => i.onchange = () => { i.checked ? fillPicked.add(i.dataset.id) : fillPicked.delete(i.dataset.id); updatePickCount(); });
+    updatePickCount();
   }
+  function updatePickCount() {
+    fillPicked = new Set([...fillPicked].filter(id => clients.some(c => c.id === id)));
+    $('#fillSel').textContent = fillPicked.size ? `${fillPicked.size} client${fillPicked.size > 1 ? 's' : ''} selected` : 'Tick one or more clients';
+    $('#fillGo').disabled = !fillPicked.size;
+  }
+  $('#fillSearch').oninput = renderFillPick;
+  $('#fillGo').onclick = () => startPreview();
 
-  async function fillCard(tpl, pdf, rec) {
-    const card = document.createElement('div'); card.className = 'card';
-    // your edits for this form only: changed values (overrides) and added text / ticks (extras)
-    const overrides = {}, extras = [];
-    let mode = 'edit', pageCount = 0;
-    const opts = () => ({ overrides, extras, noDate: !$('#fDate').checked });
-    const fileName = safeName(`${tpl.name} - ${rec.fields.name.value || 'client'}`) + '.pdf';
-    let bytes = null;
-    async function draw() {
-      const keepY = card.isConnected ? window.scrollY : null; // stay where you were after an edit
-      card.innerHTML = `<div class="empty">Filling ${esc(rec.fields.name.value)}…</div>`;
-      const rv = await FL.reviewWithFont(PDFLib, tpl, rec, opts());
-      bytes = await FL.fillPdf(PDFLib, pdf, tpl, rec, opts());
-      if (!pageCount) pageCount = (await pdfjsLib.getDocument({ data: new Uint8Array(bytes.slice(0)) }).promise).numPages;
-      const imgs = await renderPdfPages(bytes, [...Array(pageCount).keys()]);
-      const issues = rv.filter(r => r.status !== 'ok' && r.status !== 'blank');
-      const pct = (v, of) => (v / of * 100).toFixed(3) + '%';
-      const pageHtml = im => `<div class="pv" data-p="${im.p}"><img src="${im.src}" alt="Filled page ${im.p + 1}"><div class="pvov">
-        ${rv.filter(r => r.field.page === im.p).map(r => `<div class="hit ${r.status}" data-hit="${r.field.id}" title="${esc(r.label)}" style="left:${pct(r.field.x, im.w)};top:${pct(r.field.y, im.h)};width:${pct(r.field.w, im.w)};height:${pct(r.field.h, im.h)}"></div>`).join('')}
-        ${extras.map((x, i) => x.page !== im.p ? '' : `<div class="xt" data-xt="${i}" style="left:${pct(x.x - 2, im.w)};top:${pct(x.y - 2, im.h)};width:${pct(x.kind === 'tick' ? x.size * 1.2 + 4 : Math.max(20, x.text.length * x.size * 0.55) + 4, im.w)};height:${pct(x.size + 4, im.h)}"></div>`).join('')}
-        </div><span class="pvno">Page ${im.p + 1}</span></div>`;
-      card.innerHTML = `<div class="row" style="margin-bottom:10px"><h2 class="grow" style="margin:0">${esc(rec.fields.name.value)} <span class="hint">· ${esc(tpl.name)}</span></h2>${issues.length ? chip('check', issues.length + ' need attention') : chip('ok', 'Ready')}</div>
-        <div class="fillgrid"><div class="preview">
-          <div class="edbar"><div class="seg">
-            <button data-mode="edit" class="${mode === 'edit' ? 'on' : ''}">✏️ Edit values</button>
-            <button data-mode="text" class="${mode === 'text' ? 'on' : ''}">＋ Add text</button>
-            <button data-mode="tick" class="${mode === 'tick' ? 'on' : ''}">✓ Add tick</button></div>
-            <p class="hint" style="margin:6px 0 0"><span class="mtxt">${{ edit: 'Tap any filled box on the page to change it.', text: 'Tap anywhere on the page to type your own text there.', tick: 'Tap a tick box on the page to tick it. Tap a tick again to remove it.' }[mode]}</span>${extras.length ? ` · ${extras.length} addition${extras.length > 1 ? 's' : ''} <a href="#" data-undo>undo last</a>` : ''}</p></div>
-          <div class="pvs mode-${mode}">${imgs.map(pageHtml).join('')}</div></div>
-        <div><table class="rv"><thead><tr><th>Field</th><th>Value on the form</th><th></th></tr></thead><tbody>
-        ${rv.map(r => `<tr><td>${esc(r.label)}<br><small class="hint">page ${r.field.page + 1}</small></td><td><input type="text" data-f="${r.field.id}" value="${esc(r.value)}" placeholder="(left blank)">${r.note ? `<div class="hint" style="margin:2px 0 0;color:${r.status === 'ok' ? 'var(--muted)' : r.status === 'check' ? 'var(--check)' : 'var(--miss)'}">${esc(r.note)}</div>` : ''}</td><td>${chip(r.status)}</td></tr>`).join('')}
-        </tbody></table>
-        <div class="row" style="margin-top:10px"><button class="btn small" data-upd>Update preview</button></div>
-        <div class="card" style="background:var(--soft);border:0;margin:14px 0 0">
-          <label class="row" style="gap:8px"><input type="checkbox" data-ok> <b>I have checked this form</b></label>
-          <p class="hint" style="margin:6px 0 10px">Signatures, witness and tick-box choices are left blank for the client.</p>
-          <div class="row"><button class="btn primary" data-dl disabled>Download PDF</button>${navigator.canShare ? '<button class="btn" data-share disabled>Share…</button>' : ''}</div>
-        </div></div></div>`;
-      card.querySelector('[data-upd]').onclick = () => { card.querySelectorAll('input[data-f]').forEach(i => { const r = rv.find(x => x.field.id === i.dataset.f); if (i.value !== r.value) overrides[i.dataset.f] = i.value.trim(); }); draw(); };
-      card.querySelectorAll('input[data-f]').forEach(i => i.onkeydown = e => { if (e.key === 'Enter') card.querySelector('[data-upd]').click(); });
-      // ---- editing on the page itself ----
-      card.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => { mode = b.dataset.mode; card.querySelectorAll('[data-mode]').forEach(x => x.classList.toggle('on', x === b)); card.querySelector('.pvs').className = 'pvs mode-' + mode; card.querySelector('.edbar .mtxt').textContent = { edit: 'Tap any filled box on the page to change it.', text: 'Tap anywhere on the page to type your own text there.', tick: 'Tap a tick box on the page to tick it. Tap a tick again to remove it.' }[mode]; });
-      const undo = card.querySelector('[data-undo]'); if (undo) undo.onclick = e => { e.preventDefault(); extras.pop(); draw(); };
-      card.querySelectorAll('.pv').forEach(pv => pv.onclick = async e => {
-        const im = imgs.find(x => x.p === +pv.dataset.p), r = pv.getBoundingClientRect();
-        const x = (e.clientX - r.left) / r.width * im.w, y = (e.clientY - r.top) / r.height * im.h;
-        const hit = e.target.closest('[data-hit]'), xt = e.target.closest('[data-xt]');
-        if (xt) { // one of your own additions
-          const i = +xt.dataset.xt, it = extras[i];
-          if (it.kind === 'tick') { extras.splice(i, 1); return draw(); }
-          const a = await askValue('Edit your text', it.text, { sizes: true, size: it.size, remove: 'Remove' });
-          if (!a) return; if (a.clear || !a.value) extras.splice(i, 1); else Object.assign(it, { text: a.value, size: a.size });
-          return draw();
-        }
-        if (mode === 'tick') { extras.push({ kind: 'tick', page: im.p, x: x - 5, y: y - 5, size: 10 }); return draw(); }
-        if (mode === 'text') {
-          const a = await askValue('Add text to page ' + (im.p + 1), '', { sizes: true, size: 10, placeholder: 'Type the text to put here' });
-          if (a && a.value) { extras.push({ kind: 'text', page: im.p, x, y: y - a.size / 2, size: a.size, text: a.value }); draw(); }
-          return;
-        }
-        if (hit) {
-          const item = rv.find(v => v.field.id === hit.dataset.hit);
-          const a = await askValue(item.label, item.value, { hint: 'Changes this form only — your client list stays the same.', remove: 'Leave blank' });
-          if (!a) return; overrides[item.field.id] = a.clear ? '' : a.value; draw();
-        }
-      });
-      if (keepY != null) window.scrollTo(0, keepY);
-      const ok = card.querySelector('[data-ok]'), dl = card.querySelector('[data-dl]'), sh = card.querySelector('[data-share]');
-      ok.onchange = () => {
-        const dirty = [...card.querySelectorAll('input[data-f]')].some(i => i.value !== rv.find(x => x.field.id === i.dataset.f).value);
-        if (ok.checked && dirty) { ok.checked = false; toast('You changed a value — press “Update preview” first.'); return; }
-        dl.disabled = !ok.checked; if (sh) sh.disabled = !ok.checked;
+  let V = null; // {t, queue, idx, groups, extras, pages, mode, done}
+  async function startPreview() {
+    const t = tplById($('#fillForm').value);
+    const queue = clients.filter(c => fillPicked.has(c.id));
+    if (!t || !queue.length) return;
+    const bad = queue.filter(c => c.fields.policyStatus.status === 'check');
+    if (bad.length && !await confirmBox('Some policies are not in force', `<p>${bad.map(c => `<b>${esc(c.fields.name.value)}</b>: ${esc(c.fields.policyStatus.value)}`).join('<br>')}</p><p>Fill the form for them anyway?</p>`, 'Fill anyway')) return;
+    V = { t, queue, idx: 0, done: new Set(), mode: 'edit' };
+    $('#pick').hidden = true; $('#preview').hidden = false; $('#pvPages').innerHTML = ''; V.pages = null;
+    loadClient();
+  }
+  $('#pvBack').onclick = () => { V = null; $('#preview').hidden = true; $('#pick').hidden = false; renderFillPick(); };
+
+  // Fields that share a source (e.g. the policy no. on 5 pages) are edited once.
+  function loadClient() {
+    const c = V.queue[V.idx];
+    const vals = FL.resolve(V.t, c, new Date());
+    const groups = [];
+    for (const fd of V.t.fields) {
+      let g = groups.find(g => g.source === fd.source);
+      if (!g) { g = { source: fd.source, fields: [], ...vals[fd.id], label: fd.label.replace(/\s*\((page|p\.)\s*\d+\)/i, '').replace(/\s*=\s*.*$/, '').replace(/^Muslim\? (Yes|No)$/, 'Are you a Muslim?') }; groups.push(g); }
+      g.fields.push(fd);
+    }
+    V.groups = groups; V.extras = []; V.issues = {};
+    $('#pvChecked').checked = false;
+    renderPreviewSide(); refresh();
+  }
+  const groupValue = g => (g.fields.some(f => f.kind === 'boxes') ? g.value.toUpperCase() : g.value);
+
+  function renderPreviewSide() {
+    const c = V.queue[V.idx];
+    $('#pvTitle').textContent = V.t.short || V.t.name;
+    $('#pvNav').innerHTML = V.queue.length > 1
+      ? V.queue.map((q, i) => `<button class="btn sm ${i === V.idx ? 'on' : ''} pvc" data-i="${i}">${V.done.has(i) ? '✓ ' : ''}${esc(q.fields.name.value)}</button>`).join('')
+      : `<b>${esc(c.fields.name.value)}</b>&nbsp;<span class="muted">${esc(c.fields.policyNo.value)}</span>`;
+    $$('.pvc').forEach(b => b.onclick = () => { V.idx = +b.dataset.i; loadClient(); });
+    $('#pvFields').innerHTML = V.groups.map((g, i) => {
+      const places = g.fields.length > 1 ? ` <span class="muted small">· ${g.fields.length} places</span>` : '';
+      const input = g.fields.every(f => f.kind === 'tick')
+        ? `<select data-g="${i}">${['', ...new Set(g.fields.map(f => f.when || 'Yes'))].map(o => `<option ${o === g.value ? 'selected' : ''} value="${esc(o)}">${o ? esc(o) : '(leave blank)'}</option>`).join('')}</select>`
+        : `<input type="text" data-g="${i}" value="${esc(g.value)}">`;
+      return `<div class="fitem" id="pvg${i}"><div class="top"><span>${esc(g.label)}${places}</span><span class="st"></span></div>${input}<div class="nt"></div></div>`;
+    }).join('');
+    $$('#pvFields [data-g]').forEach(inp => {
+      inp.oninput = inp.onchange = () => {
+        const g = V.groups[+inp.dataset.g]; if (g.value === inp.value) return;
+        g.value = inp.value; g.status = inp.value ? 'ok' : 'missing'; g.note = inp.value ? 'Changed by you (this form only).' : '';
+        uncheck(); updateStatuses(); refreshSoon();
       };
-      dl.onclick = () => { download(bytes, fileName); toast('Downloaded ' + fileName); };
-      if (sh) sh.onclick = async () => { const file = new File([bytes], fileName, { type: 'application/pdf' }); if (navigator.canShare({ files: [file] })) await navigator.share({ files: [file], title: fileName }).catch(() => {}); else download(bytes, fileName); };
-    }
-    await draw();
-    return card;
+    });
+    updateStatuses();
+    $('#pvExtras').innerHTML = V.extras.length ? `<h3 style="margin-top:12px">Added on the page</h3>` + V.extras.map((e, i) => `<div class="fitem"><div class="top"><span>${e.tick ? '✓ tick' : esc(e.text)} <span class="muted small">· p.${e.page}</span></span><button class="btn sm danger xdel" data-i="${i}" aria-label="Remove">✕</button></div></div>`).join('') : '';
+    $$('.xdel').forEach(b => b.onclick = () => { V.extras.splice(+b.dataset.i, 1); uncheck(); renderPreviewSide(); refresh(); });
+    $('#pvNext').hidden = !(V.queue.length > 1 && V.idx < V.queue.length - 1);
+    updateDownload();
   }
-  $('#fDate').onchange = () => { if ($('#fResults').children.length) toast('Press “Fill & preview” again to apply.'); };
+  // Chips, notes and the summary, updated in place so typing is never interrupted.
+  function updateStatuses() {
+    const c = V.queue[V.idx];
+    const by = { toolong: [], check: [], missing: [] };
+    V.groups.forEach((g, i) => {
+      const issue = g.fields.map(f => V.issues[f.id]).find(Boolean);
+      const st = issue ? 'toolong' : g.value ? g.status : 'missing';
+      if (by[st]) by[st].push(g.label);
+      const el = $('#pvg' + i); if (!el) return;
+      el.querySelector('.st').innerHTML = chip(st);
+      const nt = el.querySelector('.nt');
+      nt.className = 'nt' + (issue ? ' bad' : '');
+      nt.textContent = issue || g.note || (!g.value ? 'Not in the client file, so left blank. Type it here if you have it.' : '');
+    });
+    $('#pvWarn').innerHTML = (c.fields.policyStatus.status === 'check' ? `<div class="err">⚠ Policy status: ${esc(c.fields.policyStatus.value)}</div>` : '') +
+      (by.toolong.length || by.check.length || by.missing.length
+        ? `<div class="notes">${[['toolong', 'Fix'], ['check', 'Check'], ['missing', 'Left blank']].filter(([k]) => by[k].length).map(([k, t]) => `<div><span class="chip ${k}">${t}</span> ${esc(by[k].join(', '))}</div>`).join('')}</div>`
+        : '<div class="notes"><span class="chip ok">All OK</span> Every field was read cleanly.</div>');
+  }
+  function uncheck() { if ($('#pvChecked').checked) { $('#pvChecked').checked = false; updateDownload(); } }
+  function updateDownload() { $('#pvDownload').disabled = !$('#pvChecked').checked || V.busy; }
+  $('#pvChecked').onchange = updateDownload;
+
+  let refreshTimer = null;
+  const refreshSoon = () => { clearTimeout(refreshTimer); refreshTimer = setTimeout(refresh, 350); };
+  async function build() {
+    const values = {};
+    for (const g of V.groups) for (const f of g.fields) values[f.id] = groupValue(g);
+    return FL.fill(tplBytes(V.t), V.t, values, V.extras, PDFLib);
+  }
+  async function refresh() {
+    if (!V) return;
+    const seq = (V.seq = (V.seq || 0) + 1);
+    V.busy = true; updateDownload();
+    const { bytes, issues } = await build();
+    if (seq !== V.seq) return;
+    V.issues = issues; updateStatuses();
+    V.pages = await renderPages($('#pvPages'), bytes, V.pages);
+    V.busy = false; updateDownload();
+    for (const p of V.pages) bindPreviewClicks(p);
+  }
+
+  $$('[data-mode]').forEach(b => b.onclick = () => {
+    V.mode = b.dataset.mode; $$('[data-mode]').forEach(x => x.classList.toggle('on', x === b));
+    $('#pvModeHint').textContent = { edit: 'Change any value below, or tap a filled spot on the page to jump to it. Changes apply to this form only.', text: 'Tap the page where the extra text should start (for example an amount).', tick: 'Tap the box on the page you want ticked.' }[V.mode];
+    if (V.pages) V.pages.forEach(p => p.box.classList.toggle('add', V.mode !== 'edit'));
+  });
+  function bindPreviewClicks(p) {
+    p.box.classList.toggle('add', V.mode !== 'edit');
+    p.ov.onclick = async e => {
+      const r = p.ov.getBoundingClientRect(), pt = toPt(p, e.clientX - r.left, e.clientY - r.top);
+      if (V.mode === 'edit') {
+        const gi = V.groups.findIndex(g => g.fields.some(f => f.page === p.n && fieldRects(f).some(([x, y, w, h]) => pt.x >= x - 2 && pt.x <= x + w + 2 && pt.y >= y - 2 && pt.y <= y + h + 2)));
+        if (gi < 0) return;
+        const el = $('#pvg' + gi); el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        $$('.fitem.focus').forEach(x => x.classList.remove('focus')); el.classList.add('focus');
+        const inp = el.querySelector('input,select'); inp && inp.focus({ preventScroll: true });
+        flash(p, V.groups[gi]);
+      } else if (V.mode === 'text') {
+        const text = await promptBox('Add text', 'Text to write here (this form only)');
+        if (!text || !text.trim()) return;
+        V.extras.push({ page: p.n, x: pt.x, y: pt.y, text: text.trim() }); uncheck(); renderPreviewSide(); refresh();
+      } else {
+        V.extras.push({ page: p.n, x: pt.x, y: pt.y, tick: true }); uncheck(); renderPreviewSide(); refresh();
+      }
+    };
+  }
+  function flash(p, g) {
+    for (const f of g.fields.filter(f => f.page === p.n)) for (const r of fieldRects(f)) {
+      const m = document.createElement('div'); m.className = 'hl'; place(m, toPx(p, r)); p.ov.appendChild(m); setTimeout(() => m.remove(), 1400);
+    }
+  }
+
+  $('#pvDownload').onclick = async () => {
+    const { bytes, issues } = await build();
+    if (Object.keys(issues).length) {
+      const list = [...new Set(Object.entries(issues).map(([id, msg]) => `<b>${esc(V.t.fields.find(f => f.id === id).label)}</b>: ${esc(msg)}`))].join('<br>');
+      if (!await confirmBox('Some fields need fixing', `<p>${list}</p><p>If you download now, long values are cut off at the last box. Download anyway?</p>`, 'Download anyway')) return;
+    }
+    const c = V.queue[V.idx];
+    download(bytes, safeName(`${V.t.short || V.t.name} - ${c.fields.name.value}${c.fields.policyNo.value ? ' - ' + c.fields.policyNo.value : ''}.pdf`));
+    V.done.add(V.idx); toast('Downloaded. Check your Downloads folder.');
+    renderPreviewSide();
+  };
+  $('#pvNext').onclick = () => { V.idx++; loadClient(); scrollTo(0, 0); };
+
+  // ---------- clients saved by the previous version (separate storage, left untouched) ----------
+  function readOldClients() {
+    return new Promise(res => {
+      let req;
+      try { req = indexedDB.open('w2g-autofill'); } catch (e) { return res([]); }
+      req.onupgradeneeded = e => { if (e.oldVersion === 0) req.transaction.abort(); }; // no old data: don't create anything
+      req.onerror = () => res([]);
+      req.onsuccess = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('clients')) { db.close(); return res([]); }
+        const g = db.transaction('clients').objectStore('clients').getAll();
+        g.onsuccess = () => { db.close(); res(g.result || []); }; g.onerror = () => { db.close(); res([]); };
+      };
+    });
+  }
+  async function offerOldClients() {
+    if (settings.oldImported) return;
+    const old = (await readOldClients()).filter(r => r && r.fields);
+    if (!old.length) return;
+    const ans = await dialog(`<h2>Bring over your clients?</h2><p>The previous version of W2G AutoFill has <b>${old.length}</b> saved client${old.length > 1 ? 's' : ''} on this device. Copy them into the new version?</p><p class="small muted">Clients already in the new list are skipped. The old copy is not changed.</p>`,
+      [{ label: 'No, start fresh', value: 'no' }, { label: 'Not now', value: null }, { label: 'Bring them over', value: 'yes', cls: 'pri' }]);
+    if (!ans) return;
+    settings.oldImported = true; await S.put('settings', settings);
+    if (ans !== 'yes') return;
+    let n = 0;
+    for (const r of old) {
+      const f = {};
+      for (const [k] of P.FIELDS) {
+        const v = r.fields[k === 'plan' ? 'planName' : k] || r.fields[k];
+        f[k] = v && v.value ? { value: String(v.value), status: v.status === 'ok' ? 'ok' : 'check', note: v.note || '' } : { value: '', status: 'missing', note: '' };
+      }
+      const c = { id: r.id || 'c' + Date.now().toString(36) + n, fields: f, source: r.source || 'Previous version', added: new Date().toISOString() };
+      const k = nricKey(c);
+      if (clients.some(x => (k ? nricKey(x) === k : x.fields.name.value === f.name.value) && x.fields.policyNo.value === f.policyNo.value)) continue;
+      await S.put('clients', c); clients.push(c); n++;
+    }
+    clients.sort((a, b) => a.fields.name.value.localeCompare(b.fields.name.value));
+    renderClients(); toast(`Brought over ${n} client${n === 1 ? '' : 's'}.`);
+  }
 
   // ---------- start ----------
-  // Ready-made forms come with the app: add each one once, so there is nothing to set up.
-  // If you delete one later it is not added back.
-  async function installBuiltins() {
-    let added = 0;
-    for (const b of window.W2G_BUILTIN || []) {
-      const flag = 'w2gaf-installed-' + b.key;
-      let done = false; try { done = localStorage.getItem(flag) === '1'; } catch (e) {}
-      if (done || state.templates.some(t => t.builtin === b.key)) continue;
-      try {
-        const bytes = await (await fetch(b.file)).arrayBuffer();
-        const id = 'b-' + b.key;
-        await S.put('pdfs', bytes, id);
-        await S.put('templates', { id, name: b.name, builtin: b.key, fileName: b.file.split('/').pop(), pageCount: (await pdfjsLib.getDocument({ data: new Uint8Array(bytes.slice(0)) }).promise).numPages, fields: b.fields.map((f, i) => Object.assign({ id: b.key + '-' + i }, JSON.parse(JSON.stringify(f)))) });
-        try { localStorage.setItem(flag, '1'); } catch (e) {}
-        added++;
-      } catch (e) { console.warn('Could not add ready-made form', b.key, e); }
-    }
-    if (added) await loadTemplates();
-  }
-
-  (async () => {
-    await Promise.all([loadClients(), loadTemplates()]);
-    await installBuiltins();
-    if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
-    window.W2G = { state, D, showTab, redraw: () => { drawFields(); renderSel(); }, detect, ocrLines }; // for troubleshooting
-  })();
+  renderAutoFill(); renderClients(); renderForms();
+  offerOldClients();
+  if (!(await S.persistent())) toast('Private browsing: clients are kept only until you close this window.', 5000);
+  if (!libs.Tesseract) console.info('Picture reading is off when the app is opened as a file.');
+  addEventListener('resize', () => { clearTimeout(self._rz); self._rz = setTimeout(() => { if (V && V.pages && !$('#preview').hidden) refresh(); }, 300); });
+  window.W2G = { get clients() { return clients; }, get V() { return V; }, readFiles }; // for the test run
 })();

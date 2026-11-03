@@ -4,289 +4,255 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>W2G AutoFill</title>
-<meta name="description" content="Fill the same PDF form for any client in seconds. Client data stays on this device.">
+<meta name="description" content="Fill the same PDF form for any client in one click. Client data stays on this device.">
 <meta name="theme-color" content="#14263F">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="icon" href="app-icon.png">
+<link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="AutoFill">
 <style>
-:root{
-  --bg:#F6F7F9; --card:#fff; --ink:#1b2333; --muted:#677189; --line:#e3e7ef;
-  --brand:#14263F; --gold:#D6B779; --gold-hover:#C9A660; --gold-ink:#8A6A2C; --soft:#F7F1E3;
-  --good:#1e8e5a; --goodbg:#e3f5ec; --check:#a86f00; --checkbg:#fdf3dc; --miss:#c8372d; --missbg:#fbe5e3; --blank:#7a8296; --blankbg:#eef0f4;
-}
+:root{--bg:#F4F5F8;--card:#fff;--ink:#18202F;--muted:#636D82;--line:#E1E5EC;--brand:#14263F;--brand2:#22385A;--gold:#D6B779;--gold2:#B8954D;--soft:#F8F2E4;
+--ok:#1D8A55;--okbg:#E2F4EA;--ck:#9A6500;--ckbg:#FCF0D5;--ms:#B9372D;--msbg:#FAE3E1;--focus:#3B6FD8;--r:12px}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#0F1522;--card:#182132;--ink:#E7EBF2;--muted:#9AA5BA;--line:#2A3548;--soft:#2A2617;
+--ok:#5CCB92;--okbg:#173527;--ck:#F0B850;--ckbg:#3A2E12;--ms:#F08378;--msbg:#3D1E1C}}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 html,body{margin:0}
-body{background:var(--bg);color:var(--ink);font:14px/1.45 "Segoe UI",system-ui,-apple-system,"Microsoft YaHei",sans-serif;-webkit-text-size-adjust:100%}
-button,input,select,textarea{font:inherit;color:inherit}
-.topbar{position:sticky;top:0;z-index:20;background:var(--brand);color:#fff;border-bottom:3px solid var(--gold);box-shadow:0 2px 8px rgba(0,0,0,.18);padding:env(safe-area-inset-top) 0 0}
-.topbar .in{max-width:1280px;margin:0 auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 16px}
-.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:17px;margin-right:auto}
-.brand img{width:38px;height:38px}
-.brand small{display:block;font-weight:400;font-size:11.5px;opacity:.8}
-.tabs{display:flex;gap:6px;flex-wrap:wrap}
-.tab{border:1px solid rgba(255,255,255,.3);background:rgba(255,255,255,.1);color:#fff;padding:7px 12px;border-radius:999px;cursor:pointer;white-space:nowrap}
-.tab b{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;background:rgba(255,255,255,.18);font-size:12px;margin-right:6px}
-.tab.on{background:var(--gold);border-color:var(--gold);color:var(--brand);font-weight:600}
-.tab.on b{background:var(--brand);color:var(--gold)}
-main{max-width:1280px;margin:0 auto;padding:16px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
-.card h2{margin:0 0 4px;font-size:16px}
-.card h3{margin:14px 0 8px;font-size:14px}
-.hint{color:var(--muted);font-size:13px;margin:0 0 12px}
-.btn{border:1px solid var(--line);background:#fff;color:var(--ink);padding:8px 14px;border-radius:8px;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:6px;text-decoration:none}
-.btn:hover{border-color:var(--gold)}
-.btn.primary{background:var(--gold);border-color:var(--gold);color:var(--brand);font-weight:600}
-.btn.primary:hover{background:var(--gold-hover)}
-.btn.dark{background:var(--brand);border-color:var(--brand);color:#fff}
-.btn.danger{color:var(--miss)}
-.btn.small{padding:4px 9px;font-size:12.5px}
-.btn:disabled{opacity:.45;cursor:not-allowed}
+body{background:var(--bg);color:var(--ink);font:15px/1.5 "Segoe UI",system-ui,-apple-system,Roboto,sans-serif;-webkit-text-size-adjust:100%}
+button,input,select{font:inherit;color:inherit}
+header{background:var(--brand);color:#fff;border-bottom:3px solid var(--gold);padding:10px 16px calc(0px);position:sticky;top:0;z-index:20}
+.hwrap{max-width:1180px;margin:0 auto;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.logo{display:flex;align-items:center;gap:10px;margin-right:auto;padding:4px 0}
+.logo img{width:36px;height:36px;border-radius:9px;background:#fff}
+.logo b{font-size:18px;letter-spacing:.2px}.logo small{display:block;opacity:.75;font-size:12px;margin-top:-2px}
+nav{display:flex;gap:4px;overflow-x:auto;max-width:100%}
+nav button{background:none;border:0;color:#cfd6e4;padding:10px 12px;border-bottom:3px solid transparent;cursor:pointer;white-space:nowrap;margin-bottom:-3px;font-weight:600}
+nav button.on{color:#fff;border-bottom-color:var(--gold)}
+nav button .n{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;background:rgba(255,255,255,.14);font-size:12px;margin-right:6px}
+nav button.on .n{background:var(--gold);color:var(--brand)}
+main{max-width:1180px;margin:0 auto;padding:16px}
+.tab{display:none}.tab.on{display:block}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin-bottom:16px}
+h2{font-size:18px;margin:0 0 4px}h3{font-size:15px;margin:0 0 8px}
+p{margin:6px 0}.muted{color:var(--muted)}.small{font-size:13px}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-.grow{flex:1}
-.drop{display:block;border:2px dashed #c9cfdb;border-radius:12px;padding:22px;text-align:center;background:#fafbfc;cursor:pointer}
-.drop.over{border-color:var(--gold);background:var(--soft)}
-.drop strong{display:block;font-size:15px;margin-bottom:4px}
-.drop span{color:var(--muted);font-size:13px}
-input[type=text],input[type=search],select,textarea{border:1px solid var(--line);border-radius:8px;padding:7px 9px;background:#fff;min-width:0}
-input[type=text]:focus,select:focus,textarea:focus{outline:2px solid var(--gold);outline-offset:-1px}
-.chip{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap}
-.chip.ok{background:var(--goodbg);color:var(--good)}
-.chip.check{background:var(--checkbg);color:var(--check)}
-.chip.missing,.chip.overflow{background:var(--missbg);color:var(--miss)}
-.chip.blank{background:var(--blankbg);color:var(--blank)}
-table{border-collapse:collapse;width:100%}
-th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
-th{font-size:12px;color:var(--muted);font-weight:600}
-.tablewrap{overflow-x:auto}
-.clientrow{cursor:pointer}
-.clientrow:hover td{background:#fafbfc}
-.empty{color:var(--muted);text-align:center;padding:22px}
-.log{font-size:13px;margin-top:10px}
-.log div{padding:3px 0}
-.fields{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px}
-.fld label{display:flex;justify-content:space-between;gap:6px;font-size:12px;color:var(--muted);margin-bottom:3px}
-.fld input{width:100%}
-.fld .note{font-size:12px;color:var(--check);margin-top:2px}
-.fld.missing input{border-color:#f0b4ae;background:#fff8f7}
-.fld.check input{border-color:#ecd08f;background:#fffcf3}
-.fld .note.missing{color:var(--miss)}
-.modal{position:fixed;inset:0;background:rgba(20,38,63,.45);z-index:50;display:flex;align-items:flex-start;justify-content:center;padding:24px 12px;overflow:auto}
-.modal .box{background:#fff;border-radius:14px;max-width:880px;width:100%;padding:18px;box-shadow:0 12px 40px rgba(0,0,0,.25)}
-.modal .box h2{margin:0 0 6px;font-size:17px}
-.modal .foot{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:16px}
-.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--brand);color:#fff;padding:10px 16px;border-radius:10px;z-index:60;box-shadow:0 6px 20px rgba(0,0,0,.25);max-width:90vw}
-/* designer */
-.designer{display:grid;grid-template-columns:300px minmax(0,1fr);gap:16px;align-items:start}
-.designer>*{min-width:0}
-.panel{position:sticky;top:76px;max-height:calc(100vh - 92px);overflow:auto}
-.panel .fld{margin-bottom:10px}
-.panel select,.panel input[type=text]{width:100%}
-.seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
-.seg button{flex:1;border:0;background:#fff;padding:7px 6px;cursor:pointer;font-size:13px}
-.seg button.on{background:var(--brand);color:#fff}
-.pages{display:flex;flex-direction:column;gap:14px;align-items:center}
-.pagewrap{position:relative;background:#fff;box-shadow:0 1px 6px rgba(0,0,0,.15);touch-action:pan-y;max-width:100%}
-.pagewrap canvas{display:block;width:100%;height:auto}
-.pagewrap .ov{position:absolute;inset:0;cursor:crosshair}
-.pagewrap .pno{position:absolute;top:-1px;left:-1px;background:var(--brand);color:#fff;font-size:11px;padding:1px 6px;border-radius:0 0 6px 0}
-.fbox{position:absolute;border:1.5px solid #2f6fd6;background:rgba(47,111,214,.08);border-radius:2px}
-.fbox.sel{border-color:var(--gold-ink);background:rgba(214,183,121,.22);box-shadow:0 0 0 2px rgba(214,183,121,.5)}
-.fbox .tag{position:absolute;left:-1px;bottom:100%;background:#2f6fd6;color:#fff;font-size:10px;line-height:1.2;padding:1px 4px;border-radius:3px 3px 0 0;white-space:nowrap;pointer-events:none;max-width:260px;overflow:hidden;text-overflow:ellipsis}
-.fbox .tag{display:none}
-.fbox.sel .tag,.fbox:hover .tag{display:block;z-index:2}
-.fbox.sel .tag{background:var(--gold-ink)}
-.fbox .cell{position:absolute;border:1px solid rgba(47,111,214,.55);display:grid;place-items:center;color:#0a1752;font-weight:600;font-family:Helvetica,Arial,sans-serif}
-.fbox .txt{position:absolute;inset:0;padding:0 2px;color:#0a1752;font-family:Helvetica,Arial,sans-serif;display:flex;align-items:center;white-space:nowrap;overflow:hidden}
-.drawing{position:absolute;border:1.5px dashed var(--gold-ink);background:rgba(214,183,121,.2)}
-.fieldlist{font-size:13px}
-.fieldlist div{display:flex;gap:6px;align-items:center;padding:4px 6px;border-radius:6px;cursor:pointer}
-.fieldlist div:hover{background:#f3f5f8}
-.fieldlist div.sel{background:var(--soft)}
-.fieldlist small{color:var(--muted);margin-left:auto}
-/* fill */
-.fillgrid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:16px}
-.preview img{width:100%;max-width:100%;border:1px solid var(--line);margin-bottom:8px;border-radius:4px}
-.rv td input{width:100%}
-.edbar{position:sticky;top:70px;z-index:5;background:#fff;padding:6px 0 8px;margin-bottom:6px}
-.pv{position:relative;margin-bottom:10px;border:1px solid var(--line);border-radius:4px;overflow:hidden}
-.pv img{display:block;margin:0;border:0;border-radius:0}
-.pvov{position:absolute;inset:0}
-.pvno{position:absolute;top:0;left:0;background:var(--brand);color:#fff;font-size:11px;padding:1px 6px;border-radius:0 0 6px 0}
-.hit{position:absolute;border-radius:2px}
-.mode-edit .hit{cursor:pointer;outline:1.5px dashed rgba(201,166,96,.95);background:rgba(214,183,121,.10)}
-.mode-edit .hit:hover{background:rgba(214,183,121,.28)}
-.mode-edit .hit.missing,.mode-edit .hit.overflow{outline-color:rgba(200,55,45,.9);background:rgba(200,55,45,.08)}
-.mode-edit .hit.check{outline-color:rgba(168,111,0,.95)}
-.mode-text .pvov,.mode-tick .pvov{cursor:crosshair}
-.xt{position:absolute;outline:1.5px dashed #2f6fd6;border-radius:2px;cursor:pointer;background:rgba(47,111,214,.06)}
-.rv td{font-size:13px}
-.guide ol{padding-left:20px}
-.guide li{margin-bottom:8px}
-.guide .box{background:var(--soft);border-radius:10px;padding:12px 14px;margin:10px 0}
-.privacy{font-size:12px;color:var(--muted);text-align:center;padding:8px 0 24px}
-.tplcard{border:1px solid var(--line);border-radius:10px;padding:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
-.tplcard .meta{color:var(--muted);font-size:12.5px}
-.badge{background:var(--soft);color:var(--gold-ink);font-size:11px;font-weight:700;padding:1px 6px;border-radius:4px}
-@media (max-width:860px){
-  .designer{grid-template-columns:1fr}
-  .panel{position:static;max-height:none}
-  .fillgrid{grid-template-columns:minmax(0,1fr)}
-  .fillgrid>div:last-child{order:-1}
-  .rv td:first-child{width:36%}
-  .rv td:last-child{width:1%}
-  .rv td{padding:6px 4px}
-  .tab{padding:6px 10px;font-size:13px}
-  .tab b{width:18px;height:18px;margin-right:4px}
-  .hide-sm{display:none}
-  main{padding:12px}
-  .brand small{display:none}
-}
+.spacer{flex:1}
+.btn{border:1px solid var(--line);background:var(--card);border-radius:9px;padding:8px 14px;cursor:pointer;font-weight:600;display:inline-flex;align-items:center;gap:6px;min-height:40px}
+.btn:hover{border-color:var(--gold2)}
+.btn.pri{background:var(--brand);border-color:var(--brand);color:#fff}
+.btn.gold{background:var(--gold);border-color:var(--gold);color:#1b1b1b}
+.btn.danger{color:var(--ms)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.sm{min-height:32px;padding:4px 10px;font-size:13px}
+.btn.on{background:var(--soft);border-color:var(--gold2)}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.drop{border:2px dashed var(--gold2);background:var(--soft);border-radius:var(--r);padding:28px 16px;text-align:center;cursor:pointer;transition:.15s}
+.drop.over{background:#efe2bf;border-style:solid}
+.drop b{font-size:16px}
+input[type=text],input[type=search],select{border:1px solid var(--line);background:var(--card);border-radius:8px;padding:8px 10px;min-height:40px;width:100%}
+label.f{display:block;font-size:13px;color:var(--muted);margin-bottom:4px}
+.chip{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px;font-weight:700;white-space:nowrap;vertical-align:middle}
+.chip.ok{background:var(--okbg);color:var(--ok)}.chip.check{background:var(--ckbg);color:var(--ck)}.chip.missing,.chip.toolong{background:var(--msbg);color:var(--ms)}
+.chip.info{background:var(--soft);color:var(--gold2)}
+.tw{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:8px;min-width:96px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.3px;white-space:nowrap}
+td .v{display:block;white-space:nowrap}td .nt{display:block;font-size:12px;color:var(--muted)}
+.notes{background:var(--soft);border-radius:8px;padding:8px 12px;font-size:13px;margin:8px 0}
+.notes:empty{display:none}
+.err{background:var(--msbg);color:var(--ms);border-radius:8px;padding:8px 12px;font-size:14px;margin:8px 0}
+.grid2{display:grid;grid-template-columns:minmax(0,360px) minmax(0,1fr);gap:16px;align-items:start}
+@media (max-width:860px){.grid2{grid-template-columns:minmax(0,1fr)}}
+.pages{display:flex;flex-direction:column;gap:12px}
+.pagebox{position:relative;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.18);border-radius:4px;overflow:hidden;align-self:center;max-width:100%}
+.pagebox canvas{display:block;width:100%;height:auto}
+.pagebox .ov{position:absolute;inset:0}
+.pagebox.add{cursor:crosshair}
+.hl{position:absolute;border:2px solid var(--focus);background:rgba(59,111,216,.12);border-radius:2px;pointer-events:none}
+.cellmark{position:absolute;border:1.5px solid #E0A100;background:rgba(224,161,0,.18);pointer-events:none}
+.textmark{position:absolute;border:1.5px dashed #3B6FD8;background:rgba(59,111,216,.10);pointer-events:none}
+.marklabel{position:absolute;font-size:10px;background:#14263F;color:#fff;padding:0 4px;border-radius:3px;white-space:nowrap;pointer-events:none;transform:translateY(-100%)}
+.sel{position:absolute;border:2px dashed var(--focus);background:rgba(59,111,216,.08);pointer-events:none}
+.fieldlist{display:flex;flex-direction:column;gap:8px;max-height:none}
+.fitem{border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+.fitem.focus{border-color:var(--focus);box-shadow:0 0 0 2px rgba(59,111,216,.15)}
+.fitem .top{display:flex;gap:6px;align-items:center;justify-content:space-between;font-size:13px;font-weight:600}
+.fitem input{margin-top:6px}
+.fitem .nt{font-size:12px;color:var(--muted);margin-top:4px}
+.fitem .nt.bad{color:var(--ms);font-weight:600}
+.clist{max-height:340px;overflow:auto;border:1px solid var(--line);border-radius:10px}
+.clist label{display:flex;gap:10px;align-items:center;padding:8px 10px;border-bottom:1px solid var(--line);cursor:pointer}
+.clist label:last-child{border-bottom:0}
+.clist input{width:18px;height:18px}
+.sticky{position:sticky;top:76px}
+@media (max-width:860px){.sticky{position:static}}
+dialog{border:0;border-radius:14px;padding:0;max-width:min(560px,calc(100vw - 24px));width:100%;background:var(--card);color:var(--ink);box-shadow:0 10px 40px rgba(0,0,0,.35)}
+dialog::backdrop{background:rgba(10,16,28,.55)}
+dialog .db{padding:18px}
+dialog .df{padding:12px 18px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+.ef{display:grid;grid-template-columns:150px 1fr;gap:8px 10px;align-items:center}
+@media (max-width:520px){.ef{grid-template-columns:1fr}}
+.ef .lab{font-size:13px;color:var(--muted)}
+.check-row{display:flex;gap:10px;align-items:center;background:var(--soft);border-radius:10px;padding:10px 12px;margin:10px 0}
+.check-row input{width:20px;height:20px}
+.toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--brand);color:#fff;padding:10px 16px;border-radius:10px;z-index:99;box-shadow:0 4px 16px rgba(0,0,0,.3);max-width:calc(100vw - 32px)}
+.empty{text-align:center;color:var(--muted);padding:20px}
+.progress{height:6px;background:var(--line);border-radius:6px;overflow:hidden;margin-top:8px}.progress i{display:block;height:100%;background:var(--gold2);width:0}
+.tag{font-size:11px;font-weight:700;color:var(--gold2);border:1px solid var(--gold2);border-radius:5px;padding:0 5px;margin-left:6px}
+.dup{background:var(--ckbg)}
+.pnav{display:flex;align-items:center;gap:8px}
 </style>
 </head>
 <body>
-<header class="topbar"><div class="in">
-  <div class="brand"><img src="app-icon.png" alt=""><div>W2G AutoFill<small>Fill any PDF form for any client in one click</small></div></div>
-  <nav class="tabs">
-    <button class="tab on" data-tab="clients"><b>1</b><span>Clients</span></button>
-    <button class="tab" data-tab="forms"><b>2</b><span>Forms</span></button>
-    <button class="tab" data-tab="fill"><b>3</b><span>Fill &amp; download</span></button>
-    <button class="tab" data-tab="guide"><b>?</b><span>Guide</span></button>
-  </nav>
-</div></header>
+<header>
+  <div class="hwrap">
+    <div class="logo"><img src="app-icon.png" alt=""><div><b>W2G AutoFill</b><small>Type client details once. Fill any form in one click.</small></div></div>
+    <nav id="nav">
+      <button data-tab="clients" class="on"><span class="n">1</span>Clients</button>
+      <button data-tab="forms"><span class="n">2</span>Forms</button>
+      <button data-tab="fill"><span class="n">3</span>Fill &amp; download</button>
+    </nav>
+  </div>
+</header>
 
 <main>
-  <!-- 1. CLIENTS -->
-  <section id="tab-clients">
-    <div class="card">
-      <h2>Add client details</h2>
-      <p class="hint">Drop ePartner policy printouts (PDF), a customer list (Excel / CSV / PDF), or a photo / screenshot (PNG / JPG). You can add many files at once.</p>
-      <label class="drop" id="clientDrop">
-        <input type="file" id="clientFiles" multiple accept=".pdf,.xlsx,.xls,.csv,.png,.jpg,.jpeg,.webp,image/*,application/pdf" hidden>
-        <strong>Tap or drop client files here</strong>
-        <span>PDF · Excel · CSV · PNG · JPG — read on this device, never uploaded</span>
-      </label>
-      <div class="row" style="margin-top:12px;background:var(--soft);border-radius:10px;padding:10px 12px">
-        <label for="autoTpl"><b>⚡ Auto-fill as soon as details are found:</b></label>
-        <select id="autoTpl" class="grow" style="min-width:200px"></select>
-      </div>
-      <div class="log" id="importLog"></div>
+<!-- 1 · CLIENTS -->
+<section id="tab-clients" class="tab on">
+  <div class="card">
+    <h2>Add clients</h2>
+    <p class="muted">Drop in a customer list (Excel / CSV), ePartner policy printouts (PDF) or screenshots (PNG / JPG). Files are read on this device only.</p>
+    <div id="drop" class="drop" tabindex="0" role="button" aria-label="Choose client files">
+      <b>📂 Drop client files here</b><br><span class="muted">or tap to choose · Excel, CSV, PDF, PNG, JPG · several at once is fine</span>
+      <div id="readProgress" class="progress" hidden><i></i></div>
     </div>
-    <div class="card">
-      <div class="row" style="margin-bottom:10px">
-        <h2 class="grow" style="margin:0">Your clients <span id="clientCount" class="hint"></span></h2>
-        <input type="search" id="clientSearch" placeholder="Search name, NRIC, policy…" style="max-width:240px">
-        <button class="btn small" id="addManual">+ Add by hand</button>
-        <button class="btn small danger" id="clearClients">Clear all</button>
-      </div>
-      <div class="tablewrap"><table>
-        <thead><tr><th>Name</th><th class="hide-sm">NRIC</th><th>Policy no.</th><th class="hide-sm">Account manager</th><th>Data check</th><th class="hide-sm"></th></tr></thead>
-        <tbody id="clientRows"></tbody>
-      </table></div>
+    <input id="fileIn" type="file" multiple accept=".xlsx,.xls,.xlsm,.csv,.pdf,.png,.jpg,.jpeg,.webp" hidden>
+    <div class="row" style="margin-top:10px">
+      <button class="btn sm" id="tplXlsx">⬇️ Excel template</button>
+      <span class="spacer"></span>
+      <label class="small muted" for="autoFill">⚡ After adding, go straight to fill:</label>
+      <select id="autoFill" style="width:auto;min-height:32px;padding:4px 8px"></select>
     </div>
-  </section>
+  </div>
 
-  <!-- 2. FORMS -->
-  <section id="tab-forms" hidden>
-    <div id="formsHome">
-      <div class="card">
-        <h2>Your form templates</h2>
-        <p class="hint">Set up each blank form once: upload the empty PDF and show the app where each detail goes. After that, every client takes one click.</p>
-        <div class="row" style="margin-bottom:12px">
-          <label class="btn primary">+ New form from blank PDF<input type="file" id="blankPdf" accept="application/pdf,.pdf" hidden></label>
-          <label class="btn">Import template file<input type="file" id="importTpl" accept=".json,application/json" hidden></label>
+  <div class="card" id="review" hidden>
+    <div class="row"><h2 style="margin-right:auto">Check before saving</h2><span id="reviewCount" class="muted"></span></div>
+    <p class="small muted"><span class="chip ok">OK</span> read cleanly · <span class="chip check">Check</span> found, please confirm · <span class="chip missing">Missing</span> not in the file, left blank (never guessed). Tap a name to fix a detail.</p>
+    <div id="reviewNotes" class="notes"></div>
+    <div id="reviewErrs"></div>
+    <div class="tw"><table id="reviewTable"></table></div>
+    <div class="row" style="margin-top:12px;justify-content:flex-end">
+      <button class="btn" id="reviewCancel">Cancel</button>
+      <button class="btn pri" id="reviewSave">Save clients</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="margin-bottom:8px">
+      <h2 style="margin-right:auto">Your clients <span id="clientCount" class="muted small"></span></h2>
+      <input id="clientSearch" type="search" placeholder="Search name, NRIC, policy…" style="max-width:260px">
+      <button class="btn sm danger" id="clearAll">Clear all</button>
+    </div>
+    <div class="tw"><table id="clientTable"></table></div>
+  </div>
+</section>
+
+<!-- 2 · FORMS -->
+<section id="tab-forms" class="tab">
+  <div class="card" id="formsHome">
+    <div class="row"><h2 style="margin-right:auto">Your forms</h2>
+      <button class="btn pri" id="newForm">＋ New form from blank PDF</button>
+      <button class="btn" id="importTpl">Import template file</button>
+      <input id="newFormIn" type="file" accept=".pdf" hidden><input id="importIn" type="file" accept=".json,.w2g" hidden>
+    </div>
+    <p class="muted small">Set up a form once: show the app where each detail goes. The two Great Eastern forms are ready to use.</p>
+    <div class="tw"><table id="formTable"></table></div>
+  </div>
+
+  <div id="builder" hidden>
+    <div class="grid2">
+      <div class="card sticky">
+        <div class="row"><h2 style="margin-right:auto" id="bTitle">New form</h2><button class="btn sm" id="bClose">Close</button></div>
+        <label class="f" for="bName">Form name</label>
+        <input id="bName" type="text" placeholder="e.g. Change of address form">
+        <div id="bTools">
+          <h3 style="margin-top:14px">Add a field</h3>
+          <label class="f" for="bSource">1 · What goes here?</label>
+          <select id="bSource"></select>
+          <input id="bFixed" type="text" placeholder="Text to write every time" hidden style="margin-top:6px">
+          <label class="f" for="bKind" style="margin-top:8px">2 · How is it written?</label>
+          <select id="bKind">
+            <option value="text">Normal text on a line or in a box</option>
+            <option value="boxes">One letter per box</option>
+            <option value="tick">Tick a box</option>
+          </select>
+          <div id="bWhenWrap" hidden><label class="f" for="bWhen" style="margin-top:8px">Tick when the value is</label><input id="bWhen" type="text" value="Yes"></div>
+          <p class="small" style="margin-top:8px"><b>3 · Drag over the space on the page.</b> <span class="muted" id="bHint">For boxes, drag around the whole row of boxes. The app finds each box itself.</span></p>
+          <div id="bMsg" class="notes"></div>
         </div>
-        <div id="tplList"></div>
+        <h3 style="margin-top:12px">Fields on this form <span id="bCount" class="muted small"></span></h3>
+        <div id="bFields" class="fieldlist"></div>
+        <div class="row" style="margin-top:12px;justify-content:flex-end"><button class="btn pri" id="bSave">Save form</button></div>
       </div>
-    </div>
-    <div id="designerView" hidden>
-      <div class="designer">
-        <div class="card panel">
-          <div class="row" style="margin-bottom:8px"><button class="btn small" id="dBack">← Back</button><span class="grow"></span><button class="btn small primary" id="dSave">Save template</button></div>
-          <div class="fld"><label>Template name</label><input type="text" id="dName"></div>
-          <h3>Add a field</h3>
-          <div class="fld"><label>What goes here?</label><select id="dSource"></select></div>
-          <div class="fld" id="dCustomWrap" hidden><label>Fixed text</label><input type="text" id="dCustom" placeholder="e.g. PENANG"></div>
-          <div class="fld"><label>How is it written on the form?</label>
-            <div class="seg" id="dMode"><button data-m="text" class="on">Normal text</button><button data-m="boxes">One letter per box</button></div>
-          </div>
-          <p class="hint" id="dHelp">Now drag a rectangle over the space on the form. For boxes, cover the whole row of boxes — the app finds each box itself.</p>
-          <div id="dSel" hidden>
-            <h3>Selected field</h3>
-            <div class="fld"><label>What goes here?</label><select id="sSource"></select></div>
-            <div class="fld" id="sCustomWrap" hidden><label>Fixed text</label><input type="text" id="sCustom"></div>
-            <div class="fld"><label>Written as</label><div class="seg" id="sMode"><button data-m="text">Normal text</button><button data-m="boxes">One letter per box</button></div></div>
-            <div class="fld"><label>Text size <span id="sSizeV">auto</span></label><input type="range" id="sSize" min="0" max="16" step="0.5" style="width:100%"></div>
-            <p class="hint" id="sInfo"></p>
-            <div class="row"><button class="btn small" id="sDup">Copy to all pages</button><button class="btn small danger" id="sDel">Delete field</button></div>
-            <p class="hint" style="margin-top:8px">Tip: arrow keys nudge the selected field.</p>
-          </div>
-          <h3>Fields on this form <span class="hint" id="dCount"></span></h3>
-          <div class="fieldlist" id="dList"></div>
-          <h3>Check the layout</h3>
-          <div class="fld"><label>Show values from client</label><select id="dPreviewClient"><option value="">— sample text —</option></select></div>
+      <div>
+        <div class="card row pnav" style="padding:10px 12px">
+          <button class="btn sm" id="bPrev">◀</button><span id="bPage" class="small"></span><button class="btn sm" id="bNext">▶</button>
+          <span class="spacer"></span><span class="small muted">Pages scroll below</span>
         </div>
-        <div class="pages" id="dPages"></div>
+        <div id="bPages" class="pages"></div>
       </div>
     </div>
-  </section>
+  </div>
+</section>
 
-  <!-- 3. FILL -->
-  <section id="tab-fill" hidden>
-    <div class="card">
-      <h2>Fill a form</h2>
-      <p class="hint">Pick the form and the client(s). You'll see every filled page and anything that needs your attention before you download.</p>
-      <div class="row" style="margin-bottom:10px">
-        <div class="fld grow"><label>Form</label><select id="fTpl" style="width:100%"></select></div>
-        <label class="row" style="gap:6px;margin-top:16px"><input type="checkbox" id="fDate" checked> Fill today's date</label>
+<!-- 3 · FILL -->
+<section id="tab-fill" class="tab">
+  <div class="card" id="pick">
+    <h2>Fill a form</h2>
+    <div class="row" style="align-items:flex-end">
+      <div style="flex:1;min-width:220px"><label class="f" for="fillForm">Form</label><select id="fillForm"></select></div>
+      <div style="flex:1;min-width:220px"><label class="f" for="fillSearch">Clients</label><input id="fillSearch" type="search" placeholder="Search…"></div>
+    </div>
+    <div class="clist" id="fillClients" style="margin-top:10px"></div>
+    <div class="row" style="margin-top:12px"><span id="fillSel" class="muted small"></span><span class="spacer"></span><button class="btn pri" id="fillGo" disabled>Fill &amp; preview</button></div>
+  </div>
+
+  <div id="preview" hidden>
+    <div class="grid2">
+      <div class="card sticky">
+        <div class="row"><h2 style="margin-right:auto" id="pvTitle"></h2><button class="btn sm" id="pvBack">Back</button></div>
+        <div class="row small" id="pvNav" style="margin:6px 0"></div>
+        <div id="pvWarn"></div>
+        <div class="row" style="margin:8px 0">
+          <button class="btn sm on" data-mode="edit">✏️ Edit values</button>
+          <button class="btn sm" data-mode="text">＋ Add text</button>
+          <button class="btn sm" data-mode="tick">✓ Add tick</button>
+        </div>
+        <p class="small muted" id="pvModeHint">Change any value below, or tap a filled spot on the page to jump to it. Changes apply to this form only.</p>
+        <div id="pvFields" class="fieldlist"></div>
+        <div id="pvExtras"></div>
+        <label class="check-row"><input type="checkbox" id="pvChecked"> <span><b>I have checked this form</b><br><span class="small muted">Download unlocks once you tick this.</span></span></label>
+        <div class="row"><button class="btn gold" id="pvDownload" disabled>⬇️ Download PDF</button><span class="spacer"></span><button class="btn" id="pvNext" hidden>Next client ▶</button></div>
       </div>
-      <div class="row" style="margin-bottom:6px"><strong class="grow">Clients</strong><input type="search" id="fSearch" placeholder="Search…" style="max-width:200px"><button class="btn small" id="fAll">Select all</button></div>
-      <div id="fClients" style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:8px"></div>
-      <div class="row" style="margin-top:12px"><button class="btn primary" id="fGo">Fill &amp; preview</button><span class="hint" id="fSelInfo" style="margin:0"></span></div>
+      <div><div id="pvPages" class="pages"></div></div>
     </div>
-    <div id="fResults"></div>
-  </section>
-
-  <!-- GUIDE -->
-  <section id="tab-guide" hidden>
-    <div class="card guide">
-      <h2>How to use W2G AutoFill</h2>
-      <p class="hint">The problem it solves: you keep typing the same client details into the same PDF forms. Set up a form once, then every client is one click.</p>
-      <h3>1 · Add your clients (once per client)</h3>
-      <ol>
-        <li>Open <b>Clients</b> and drop in an <b>ePartner policy printout</b> (PDF), a <b>customer list</b> (Excel / CSV / PDF table), or a <b>photo / screenshot</b>.</li>
-        <li>The app shows what it found. <span class="chip ok">OK</span> = read cleanly, <span class="chip check">Check</span> = found but please confirm (e.g. phone missing its leading 0), <span class="chip missing">Missing</span> = not in the file — it stays blank, the app never guesses.</li>
-        <li>With <b>⚡ Auto-fill</b> set to a form (or <i>All my forms</i>), new clients are saved and the form is filled straight away — you land on the preview, ready to check and download. If a client is already in your list, the app asks before updating them. Set it to <i>Off</i> to only save clients.</li>
-        <li>Tap a client any time to correct a detail.</li>
-      </ol>
-      <h3>2 · Set up a form (once per form)</h3>
-      <ol>
-        <li>The Great Eastern <i>Nominee (NBZ-FNOMI)</i> and <i>Withdrawal/Surrender (CSD-PSF33)</i> forms come built in — nothing to set up. Skip this step unless you need another form.</li>
-        <li>For another form: open <b>Forms → New form from blank PDF</b> and choose the empty form.</li>
-        <li>For any other form: choose <b>What goes here?</b> (e.g. Full name), choose <b>Normal text</b> or <b>One letter per box</b>, then drag a rectangle over the space. For boxes, cover the whole row — the app finds each little box.</li>
-        <li>Pick a client under <b>Check the layout</b> to see real values on the page, adjust, then <b>Save template</b>.</li>
-      </ol>
-      <h3>3 · Fill and download (every time)</h3>
-      <ol>
-        <li>Open <b>Fill &amp; download</b>, choose the form and tick one or more clients, press <b>Fill &amp; preview</b>.</li>
-        <li>Look at the preview. To change anything, use the buttons above the pages: <b>✏️ Edit values</b> — tap a filled box to change or clear it; <b>＋ Add text</b> — tap anywhere to type your own text (e.g. a withdrawal amount); <b>✓ Add tick</b> — tap a tick box to tick it (tap again to remove). You can also type in the list beside the preview. Edits change only this form, not your client list.</li>
-        <li>Tick <b>I have checked this form</b>, then <b>Download PDF</b> (on a phone you can also <b>Share</b> it).</li>
-      </ol>
-      <div class="box"><b>Left blank on purpose:</b> signatures, witness details and tick-box choices (e.g. withdrawal type, reasons) — the client completes those.</div>
-      <div class="box"><b>Your data:</b> client files are read inside this browser and saved only on this device. Nothing is uploaded. Use <b>Clients → Clear all</b> to remove everything. To move a form layout to your phone, use <b>Export</b> on the template and <b>Import template file</b> on the phone.</div>
-    </div>
-  </section>
-  <div class="privacy">Client data is processed and stored only on this device.</div>
+  </div>
+</section>
 </main>
+
+<dialog id="dlg"><div class="db" id="dlgBody"></div><div class="df" id="dlgFoot"></div></dialog>
 
 <script src="lib/pdf.min.js"></script>
 <script src="lib/pdf-lib.min.js"></script>
 <script src="lib/xlsx.full.min.js"></script>
 <script src="lib/tesseract.min.js"></script>
+<script src="js/forms-data.js"></script>
+<script src="js/boxes.js"></script>
 <script src="js/parse.js"></script>
 <script src="js/fill.js"></script>
-<script src="js/store.js"></script>
 <script src="js/templates.js"></script>
+<script src="js/store.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

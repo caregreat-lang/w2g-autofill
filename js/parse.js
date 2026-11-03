@@ -1,374 +1,394 @@
-// W2G AutoFill - turns client files (ePartner printouts, customer lists, Excel rows, OCR text) into client records.
-// Rule: never guess. A value we are unsure about is kept but flagged "check"; a value we cannot find stays blank and is flagged "missing".
+/* W2G AutoFill: reads client details from Excel / CSV, PDF (ePartner printouts or customer lists) and pictures.
+ * Every value gets a status: ok (read cleanly), check (found, but please confirm) or missing (left blank, never guessed). */
 (function (root) {
-  'use strict';
-
+  // ---------- Client fields ----------
   const FIELDS = [
-    { key: 'name', label: 'Full name', required: true },
-    { key: 'nric', label: 'NRIC / ID no.', required: true },
-    { key: 'dob', label: 'Birthday (DD/MM/YYYY)', required: true },
-    { key: 'gender', label: 'Gender (M/F)' },
-    { key: 'phone', label: 'Mobile phone', required: true },
-    { key: 'homeTel', label: 'Home / office tel' },
-    { key: 'email', label: 'Email', required: true },
-    { key: 'address', label: 'Address (street)' },
-    { key: 'postcode', label: 'Postcode' },
-    { key: 'town', label: 'Town / city' },
-    { key: 'company', label: 'Company' },
-    { key: 'accountManager', label: 'Account manager / agent', required: true },
-    { key: 'agentCode', label: 'Agent code (IAC / A/C no.)' },
-    { key: 'agentPhone', label: 'Agent phone' },
-    { key: 'policyNo', label: 'Policy no.' },
-    { key: 'planName', label: 'Plan name' },
-    { key: 'policyStatus', label: 'Policy status' },
-    { key: 'religion', label: 'Religion' },
+    ['name', 'Customer name'], ['nric', 'NRIC / Passport'], ['dob', 'Birthday'], ['gender', 'Gender'],
+    ['phone', 'Phone'], ['email', 'Email'], ['company', 'Company'], ['accountManager', 'Account manager'],
+    ['policyNo', 'Policy no.'], ['plan', 'Plan'], ['policyStatus', 'Policy status'], ['religion', 'Religion'],
+    ['address', 'Address'], ['postcode', 'Postcode'], ['town', 'Town'], ['laName', 'Life assured name'], ['laNric', 'Life assured NRIC']
   ];
+  // The six details from the brief; the rest are extra and only flagged when a form needs them.
+  const CORE = ['name', 'company', 'dob', 'phone', 'email', 'accountManager'];
 
-  // Column / label names people use for each field (lower case, punctuation removed)
-  const SYNONYMS = {
-    name: ['name', 'full name', 'customer name', 'client name', 'customer', 'client', 'policy owner', 'policyowner', 'proposer', 'nama'],
-    nric: ['nric', 'ic', 'ic no', 'nric no', 'id no', 'id', 'ic number', 'identity card', 'passport', 'passport no', 'new nric', 'mykad'],
+  const HEADERS = {
+    name: ['customer name', 'client name', 'name', 'full name', 'nama', 'customer', 'client', 'policy owner', 'policyowner', 'policy owner name', 'proposer'],
+    nric: ['nric', 'nric no', 'ic', 'ic no', 'id no', 'id', 'mykad', 'passport', 'passport no', 'ic passport', 'nric passport', 'new ic', 'client id', 'id number'],
     dob: ['birthday', 'dob', 'date of birth', 'birth date', 'birthdate', 'tarikh lahir'],
     gender: ['gender', 'sex', 'jantina'],
-    phone: ['phone', 'mobile', 'mobile no', 'handphone', 'hp', 'hp no', 'contact', 'contact no', 'phone no', 'phone number', 'mobile number', 'tel', 'telephone', 'no tel', 'cell'],
-    homeTel: ['home tel', 'residence tel', 'office tel', 'home phone', 'office phone', 'house phone'],
-    email: ['email', 'e mail', 'email address', 'emel'],
-    address: ['address', 'mailing address', 'home address', 'alamat', 'street'],
-    postcode: ['postcode', 'post code', 'postal code', 'zip', 'poskod'],
-    town: ['town', 'city', 'bandar'],
-    company: ['company', 'company name', 'employer', 'organisation', 'organization', 'syarikat'],
-    accountManager: ['account manager', 'acct manager', 'manager', 'agent', 'agent name', 'servicing agent', 'rm', 'relationship manager', 'advisor', 'adviser', 'consultant'],
-    agentCode: ['agent code', 'iac', 'iac no', 'agent no', 'a c no', 'agent id'],
-    agentPhone: ['agent phone', 'agent contact', 'agent tel'],
-    policyNo: ['policy no', 'policy number', 'policy', 'p n', 'no polisi', 'policy #'],
-    planName: ['plan', 'plan name', 'product', 'benefit'],
-    policyStatus: ['policy status'],
+    phone: ['phone', 'phone no', 'phone number', 'mobile', 'mobile no', 'mobile number', 'contact', 'contact no', 'contact number', 'tel', 'tel no', 'telephone', 'hp', 'hp no', 'handphone'],
+    email: ['email', 'e mail', 'email address'],
+    company: ['company', 'company name', 'employer', 'syarikat', 'organisation', 'organization', 'firm'],
+    accountManager: ['account manager', 'acct manager', 'manager', 'agent', 'servicing agent', 'agent name', 'relationship manager', 'rm', 'advisor', 'adviser', 'am'],
+    policyNo: ['policy no', 'policy number', 'policy', 'p n', 'polisi', 'no polisi'],
+    plan: ['plan', 'plan name', 'product'],
+    policyStatus: ['status', 'policy status'],
     religion: ['religion', 'agama'],
+    address: ['address', 'mailing address', 'alamat'],
+    postcode: ['postcode', 'post code', 'poskod', 'zip'],
+    town: ['town', 'city', 'bandar']
   };
+  const normHead = s => String(s ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const HEAD_INDEX = {};
+  for (const [k, list] of Object.entries(HEADERS)) for (const h of list) HEAD_INDEX[h] = k;
+  const headerKey = s => HEAD_INDEX[normHead(s)] || null;
 
-  const norm = s => String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9#]+/g, ' ').trim();
-  const clean = s => String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
-  const isBlank = v => v == null || /^[-–—\s]*$/.test(String(v)) || /^(n\/?a|nil|none|null|unknown|tbc|tba|not provided.*|ask|\?+)$/i.test(String(v).trim());
-
-  function fieldForHeader(h) {
-    const n = norm(h);
-    if (!n) return null;
-    for (const k in SYNONYMS) if (SYNONYMS[k].includes(n)) return k;
-    // looser: header contains a synonym of 4+ letters ("Customer Email" -> email)
-    let best = null, bestLen = 0;
-    for (const k in SYNONYMS) for (const s of SYNONYMS[k]) if (s.length >= 4 && (' ' + n + ' ').includes(' ' + s + ' ') && s.length > bestLen) { best = k; bestLen = s.length; }
-    return best;
+  // ---------- Cleaning and checking ----------
+  const pad = n => String(n).padStart(2, '0');
+  const validDate = (d, m, y) => { const t = new Date(y, m - 1, d); return t.getFullYear() === y && t.getMonth() === m - 1 && t.getDate() === d; };
+  const fullYear = y => (y < 100 ? (y > (new Date().getFullYear() % 100) ? 1900 + y : 2000 + y) : y);
+  const nricDigits = s => String(s || '').replace(/\D/g, '');
+  const isMyNric = s => /^\d{12}$/.test(nricDigits(s)) && /^\s*\d{6}-?\d{2}-?\d{4}\s*$/.test(String(s));
+  function nricBirth(nric) {
+    const d = nricDigits(nric); if (d.length !== 12) return null;
+    const yy = +d.slice(0, 2), mm = +d.slice(2, 4), dd = +d.slice(4, 6);
+    if (!validDate(dd, mm, 2000)) return null;
+    return { yy, mm, dd };
   }
 
-  // ---------- value cleaning: returns {value, status: 'ok'|'check'|'missing', note} ----------
-  const MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, sept: 9, oct: 10, nov: 11, dec: 12 };
-  const pad = n => String(n).padStart(2, '0');
-  function validDate(d, m, y) { const t = new Date(y, m - 1, d); return t.getFullYear() === y && t.getMonth() === m - 1 && t.getDate() === d; }
+  // Returns {value, status, note}
+  function cleanDob(raw, nric) {
+    if (raw == null || String(raw).trim() === '' || raw === '-') return null;
+    let d, m, y, twoWays = false;
+    if (raw instanceof Date && !isNaN(raw)) { d = raw.getDate(); m = raw.getMonth() + 1; y = raw.getFullYear(); }
+    else if (typeof raw === 'number' && raw > 1000 && raw < 80000) { // Excel serial date
+      const t = new Date(Math.round((raw - 25569) * 86400000)); d = t.getUTCDate(); m = t.getUTCMonth() + 1; y = t.getUTCFullYear();
+    } else {
+      const s = String(raw).trim();
+      let mt;
+      if ((mt = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/))) { y = +mt[1]; m = +mt[2]; d = +mt[3]; }
+      else if ((mt = s.match(/^(\d{1,2})[-/. ](\d{1,2})[-/. ](\d{2,4})$/))) {
+        d = +mt[1]; m = +mt[2]; y = fullYear(+mt[3]);
+        if (d <= 12 && m <= 12 && d !== m) twoWays = true;
+        if (m > 12 && d <= 12) { [d, m] = [m, d]; twoWays = false; } // clearly month/day
+      } else if ((mt = s.match(/^(\d{1,2})\s+([A-Za-z]{3,})\.?,?\s+(\d{4})$/))) {
+        const mi = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'].indexOf(mt[2].slice(0, 3).toLowerCase());
+        if (mi >= 0) { d = +mt[1]; m = mi + 1; y = +mt[3]; }
+      }
+    }
+    if (!d || !validDate(d, m, y)) return { value: String(raw).trim(), status: 'check', note: 'Not a date I can read. Please type it as DD/MM/YYYY.' };
+    const b = nricBirth(nric);
+    if (b) {
+      const fits = (dd, mm) => dd === b.dd && mm === b.mm && y % 100 === b.yy;
+      if (fits(d, m)) return { value: `${pad(d)}/${pad(m)}/${y}`, status: 'ok', note: twoWays ? 'Could be read two ways; confirmed with the NRIC.' : '' };
+      if (twoWays && fits(m, d)) return { value: `${pad(m)}/${pad(d)}/${y}`, status: 'ok', note: 'Day and month were swapped in the file; confirmed with the NRIC.' };
+      return { value: `${pad(d)}/${pad(m)}/${y}`, status: 'check', note: 'Does not match the birth date inside the NRIC.' };
+    }
+    if (twoWays) return { value: `${pad(d)}/${pad(m)}/${y}`, status: 'check', note: `${pad(d)} ${monthName(m)} or ${pad(m)} ${monthName(d)}?` };
+    return { value: `${pad(d)}/${pad(m)}/${y}`, status: 'ok', note: '' };
+  }
+  const monthName = m => ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m - 1];
 
-  function cleanDate(raw) {
-    if (raw instanceof Date && !isNaN(raw)) return { value: `${pad(raw.getDate())}/${pad(raw.getMonth() + 1)}/${raw.getFullYear()}`, status: 'ok' };
-    if (typeof raw === 'number' && raw > 1000 && raw < 80000) { // Excel serial date
-      const t = new Date(Math.round((raw - 25569) * 86400000));
-      return { value: `${pad(t.getUTCDate())}/${pad(t.getUTCMonth() + 1)}/${t.getUTCFullYear()}`, status: 'ok' };
-    }
-    const s = clean(raw);
-    if (isBlank(s)) return { value: '', status: 'missing' };
-    let m, d, mo, y, note = '';
-    if ((m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/))) { y = +m[1]; mo = +m[2]; d = +m[3]; }
-    else if ((m = s.match(/^(\d{1,2})[-/. ](\d{1,2})[-/. ](\d{2}|\d{4})$/))) {
-      d = +m[1]; mo = +m[2]; y = +m[3];
-      if (d <= 12 && mo <= 12 && d !== mo) note = 'Read as day/month/year - please confirm';
-    }
-    else if ((m = s.match(/^(\d{1,2})[-/ ]?([a-z]{3,9})[-/ ,]*(\d{2}|\d{4})$/i)) && MONTHS[m[2].toLowerCase().slice(0, 3)]) { d = +m[1]; mo = MONTHS[m[2].toLowerCase().slice(0, 3)]; y = +m[3]; }
-    else if ((m = s.match(/^([a-z]{3,9})[ ,]+(\d{1,2})[ ,]+(\d{4})$/i)) && MONTHS[m[1].toLowerCase().slice(0, 3)]) { mo = MONTHS[m[1].toLowerCase().slice(0, 3)]; d = +m[2]; y = +m[3]; }
-    else if ((m = s.match(/^(\d{2})(\d{2})(\d{4})$/))) { d = +m[1]; mo = +m[2]; y = +m[3]; note = 'Read 8 digits as DDMMYYYY - please confirm'; }
-    else return { value: s, status: 'check', note: 'Birthday format not recognised' };
-    if (y < 100) { y += y > (new Date().getFullYear() % 100) ? 1900 : 2000; note = note || 'Two-digit year - please confirm century'; }
-    if (!validDate(d, mo, y)) return { value: s, status: 'check', note: 'Not a real date' };
-    return { value: `${pad(d)}/${pad(mo)}/${y}`, status: note ? 'check' : 'ok', note };
+  function cleanPhone(raw) {
+    if (raw == null) return null;
+    let s = String(raw).trim(); if (!s || s === '-') return null;
+    let digits = s.replace(/[^\d]/g, '');
+    if (s.startsWith('+') && !digits.startsWith('60')) return { value: s, status: 'check', note: 'Overseas number. Please confirm.' };
+    if (digits.startsWith('60') && digits.length >= 11) digits = '0' + digits.slice(2);
+    if (/^1\d{8,9}$/.test(digits)) return { value: fmtPhone('0' + digits), status: 'check', note: `Added the missing 0 (file shows ${s}).` };
+    if (/^01\d{8,9}$/.test(digits)) return { value: fmtPhone(digits), status: 'ok', note: '' };
+    if (/^0[3-9]\d{7,8}$/.test(digits)) return { value: digits, status: 'ok', note: 'Landline' };
+    return { value: s, status: 'check', note: 'Not a usual Malaysian phone number. Please confirm.' };
+  }
+  const fmtPhone = d => d.slice(0, 3) + '-' + d.slice(3);
+
+  function cleanEmail(raw) {
+    if (raw == null) return null;
+    const s = String(raw).trim().replace(/^mailto:/i, ''); if (!s || s === '-') return null;
+    if (/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(s)) return { value: s.toLowerCase(), status: 'ok', note: '' };
+    return { value: s, status: 'check', note: 'Looks incomplete.' };
   }
 
   function cleanNric(raw) {
-    const s = clean(raw).toUpperCase();
-    if (isBlank(s)) return { value: '', status: 'missing' };
-    const digits = s.replace(/\D/g, '');
-    if (/^[\d\s-]+$/.test(s) && digits.length === 12) {
-      const v = `${digits.slice(0, 6)}-${digits.slice(6, 8)}-${digits.slice(8)}`;
-      const yy = +digits.slice(0, 2), mm = +digits.slice(2, 4), dd = +digits.slice(4, 6);
-      if (!validDate(dd, mm, 2000 + yy) && !validDate(dd, mm, 1900 + yy)) return { value: v, status: 'check', note: 'First 6 digits are not a valid birth date' };
-      return { value: v, status: 'ok' };
+    if (raw == null) return null;
+    const s = String(raw).trim(); if (!s || s === '-') return null;
+    const d = nricDigits(s);
+    if (d.length === 12 && /^[\d\s-]+$/.test(s)) {
+      if (!nricBirth(d)) return { value: `${d.slice(0, 6)}-${d.slice(6, 8)}-${d.slice(8)}`, status: 'check', note: 'The first 6 digits are not a valid birth date.' };
+      return { value: `${d.slice(0, 6)}-${d.slice(6, 8)}-${d.slice(8)}`, status: 'ok', note: '' };
     }
-    if (/^[\d\s-]+$/.test(s)) return { value: s, status: 'check', note: `NRIC should have 12 digits (found ${digits.length})` };
-    return { value: s, status: 'check', note: 'Not a 12-digit NRIC - passport or old IC? Please confirm' };
+    if (/^\d+$/.test(d) && d.length > 8 && d.length < 12 && /^[\d\s-]+$/.test(s)) return { value: s, status: 'check', note: `Only ${d.length} digits; a MyKad NRIC has 12.` };
+    if (/^[A-Z]{1,2}\d{6,9}$/i.test(s.replace(/\s/g, ''))) return { value: s.replace(/\s/g, '').toUpperCase(), status: 'ok', note: 'Passport number' };
+    return { value: s, status: 'check', note: 'Not a usual NRIC or passport number. Please confirm.' };
   }
 
-  // Malaysian phone numbers. ePartner prints them without the leading 0 (124015618) - we add it but ask to confirm.
-  function cleanPhone(raw, kind) {
-    let s = clean(raw);
-    if (isBlank(s)) return { value: '', status: 'missing' };
-    if (typeof raw === 'number') s = String(raw);
-    let d = s.replace(/[^\d+]/g, '');
-    if (d.startsWith('+60')) d = '0' + d.slice(3); else if (d.startsWith('60') && d.length >= 11) d = '0' + d.slice(2);
-    d = d.replace(/\D/g, '');
-    if (/^1\d{8,9}$/.test(d) && kind !== 'home') return { value: '0' + d, status: 'check', note: `Leading 0 added (source shows ${s}) - please confirm` };
-    if (/^01\d{8,9}$/.test(d)) return { value: d, status: 'ok' };
-    if (/^0[3-9]\d{7,8}$/.test(d)) return { value: d, status: 'ok' };
-    if (kind === 'home' && /^\d{7,9}$/.test(d)) return { value: d, status: 'check', note: 'Area code may be missing - please confirm' };
-    return { value: s, status: 'check', note: 'Phone number looks unusual - please confirm' };
+  function cleanGender(raw, nric) {
+    const s = String(raw ?? '').trim().toUpperCase();
+    const fromIc = isMyNric(nric) ? (+nricDigits(nric).slice(-1) % 2 ? 'M' : 'F') : null;
+    let g = null;
+    if (/^(M|MALE|L|LELAKI|MR)$/.test(s)) g = 'M'; else if (/^(F|FEMALE|P|PEREMPUAN|MS|MDM|MADAM|MRS)$/.test(s)) g = 'F';
+    if (g && fromIc && g !== fromIc) return { value: g, status: 'check', note: 'Does not match the NRIC (last digit).' };
+    if (g) return { value: g, status: 'ok', note: '' };
+    if (fromIc) return { value: fromIc, status: 'ok', note: 'Worked out from the NRIC (last digit).' };
+    return s ? { value: s, status: 'check', note: 'Not M or F. Please confirm.' } : null;
   }
 
-  function cleanEmail(raw) {
-    const s = clean(raw).replace(/\s/g, '');
-    if (isBlank(s)) return { value: '', status: 'missing' };
-    if (/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(s)) return { value: s, status: 'ok' };
-    return { value: s, status: 'check', note: 'Email address looks incomplete' };
-  }
+  const cleanText = raw => { if (raw == null) return null; const s = String(raw).replace(/\s+/g, ' ').trim(); return s && s !== '-' ? { value: s, status: 'ok', note: '' } : null; };
+  const cleanName = raw => { const t = cleanText(raw); if (!t) return null; t.value = t.value.toUpperCase(); if (/\d/.test(t.value)) { t.status = 'check'; t.note = 'Has numbers in it. Please confirm.'; } return t; };
 
-  function cleanGender(raw) {
-    const s = clean(raw).toUpperCase();
-    if (isBlank(s)) return { value: '', status: 'missing' };
-    if (/^(M|MALE|LELAKI|L)$/.test(s)) return { value: 'M', status: 'ok' };
-    if (/^(F|FEMALE|P|PEREMPUAN|W)$/.test(s)) return { value: 'F', status: 'ok' };
-    return { value: s, status: 'check', note: 'Gender not recognised' };
-  }
-
-  function cleanText(raw) {
-    const s = clean(raw);
-    if (isBlank(s)) return { value: '', status: 'missing' };
-    return { value: s, status: 'ok' };
-  }
-
-  function cleanField(key, raw) {
-    switch (key) {
-      case 'dob': return cleanDate(raw);
-      case 'nric': return cleanNric(raw);
-      case 'phone': case 'agentPhone': return cleanPhone(raw, 'mobile');
-      case 'homeTel': return cleanPhone(raw, 'home');
-      case 'email': return cleanEmail(raw);
-      case 'gender': return cleanGender(raw);
-      case 'name': case 'accountManager': { const r = cleanText(raw); if (r.value) r.value = r.value.toUpperCase(); return r; }
-      default: return cleanText(raw);
+  // raw: {field: value}. fromPicture marks everything "check" because it was read from an image.
+  function buildClient(raw, opts = {}) {
+    const f = {};
+    const nric = cleanNric(raw.nric);
+    f.nric = nric;
+    f.name = cleanName(raw.name);
+    f.dob = cleanDob(raw.dob, nric && nric.value);
+    f.gender = cleanGender(raw.gender, nric && nric.value);
+    f.phone = cleanPhone(raw.phone);
+    f.email = cleanEmail(raw.email);
+    f.company = cleanText(raw.company);
+    f.accountManager = cleanName(raw.accountManager);
+    const pol = cleanText(raw.policyNo); if (pol) { pol.value = pol.value.replace(/\s/g, ''); if (!/^\d{6,12}$/.test(pol.value)) { pol.status = 'check'; pol.note = 'Not a usual policy number. Please confirm.'; } }
+    f.policyNo = pol;
+    f.plan = cleanText(raw.plan);
+    f.policyStatus = cleanText(raw.policyStatus);
+    if (f.policyStatus && !/^(in ?force|active|regular)$/i.test(f.policyStatus.value)) { f.policyStatus.status = 'check'; f.policyStatus.note = `Policy is ${f.policyStatus.value}.`; }
+    f.religion = cleanText(raw.religion);
+    f.address = cleanText(raw.address); f.postcode = cleanText(raw.postcode); f.town = cleanText(raw.town);
+    f.laName = cleanName(raw.laName); f.laNric = cleanNric(raw.laNric);
+    for (const [k] of FIELDS) {
+      if (!f[k]) f[k] = { value: '', status: 'missing', note: '' };
+      else if (opts.fromPicture && f[k].status === 'ok') { f[k].status = 'check'; f[k].note = (f[k].note ? f[k].note + ' ' : '') + 'Read from a picture.'; }
     }
+    if (!f.company.value && opts.noCompanyInSource) f.company.note = 'Not in this file.';
+    return { id: 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7), fields: f, source: opts.source || '', added: new Date().toISOString() };
   }
 
-  // Builds a client record from {key: rawValue}. Adds cross-checks (NRIC vs birthday, policy status).
-  function makeRecord(raw, source) {
-    const rec = { id: 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7), source: source || '', fields: {} };
-    for (const f of FIELDS) {
-      const r = raw[f.key] === undefined ? { value: '', status: 'missing' } : cleanField(f.key, raw[f.key]);
-      rec.fields[f.key] = r;
-    }
-    crossCheck(rec);
-    return rec;
-  }
-
-  function crossCheck(rec) {
-    const F = rec.fields;
-    for (const k in F) if (F[k].auto) { delete F[k].auto; if (F[k].status === 'check' && F[k].autoNote === F[k].note) { F[k].status = 'ok'; F[k].note = ''; } delete F[k].autoNote; }
-    const nric = (F.nric.value || '').replace(/\D/g, ''), dob = F.dob.value;
-    if (nric.length === 12 && /^\d{2}\/\d{2}\/\d{4}$/.test(dob)) {
-      const [d, m, y] = dob.split('/');
-      if (nric.slice(0, 6) === y.slice(2) + m + d && F.dob.status === 'check' && /day\/month|DDMMYYYY|century/.test(F.dob.note || '')) { F.dob.status = 'ok'; F.dob.note = 'Confirmed by NRIC'; }
-      else if (nric.slice(0, 6) !== y.slice(2) + m + d && F.dob.status === 'ok') { F.dob.status = 'check'; F.dob.note = F.dob.autoNote = 'Birthday does not match NRIC (' + nric.slice(0, 6) + ')'; F.dob.auto = true; }
-    }
-    const st = F.policyStatus.value;
-    if (st && !/inforce|in force|active/i.test(st)) { F.policyStatus.status = 'check'; F.policyStatus.note = F.policyStatus.autoNote = 'Policy is not in force - make sure this form is right for it'; F.policyStatus.auto = true; }
-    return rec;
-  }
-
-  // Splits "L-10-5 DESA PERMAI INDAH JALAN HELANG 11700 GELUGOR" into street / postcode / town.
-  function splitAddress(full) {
-    const s = clean(full);
-    const m = s.match(/^(.*?)[,\s]+(\d{5})\s+([A-Z][A-Z .'-]*?)[,\s]*(?:,?\s*[A-Z .]+)?$/i);
-    const all = s.match(/\b\d{5}\b/g) || [];
-    if (!m || all.length !== 1) return { address: s, postcode: '', town: '' , unsure: true };
-    return { address: m[1].replace(/[,\s]+$/, ''), postcode: m[2], town: s.slice(s.indexOf(m[2]) + 5).replace(/^[,\s]+/, '').trim() };
-  }
-
-  // ---------- text layout helpers (pdf.js / OCR items -> lines) ----------
-  // items: [{s, x, y, w}] where y grows downwards (we flip pdf.js y before calling)
-  function toLines(items, tol) {
-    tol = tol || 3;
-    const sorted = items.filter(i => i.s && i.s.trim()).slice().sort((a, b) => a.y - b.y || a.x - b.x);
+  // ---------- Positioned text (PDF text or picture words) ----------
+  // items: [{str, x, y, h, page}] with y growing downwards. Groups into lines, then joins close words into phrases.
+  function toLines(items) {
+    const sorted = items.filter(i => i.str && i.str.trim()).sort((a, b) => a.page - b.page || a.y - b.y || a.x - b.x);
     const lines = [];
     for (const it of sorted) {
-      const l = lines.length && Math.abs(lines[lines.length - 1].y - it.y) < tol ? lines[lines.length - 1] : null;
-      if (l) l.items.push(it); else lines.push({ y: it.y, items: [it] });
+      const l = lines.length && lines[lines.length - 1];
+      if (l && l.page === it.page && Math.abs(l.y - it.y) <= Math.max(2, 0.45 * it.h)) l.items.push(it);
+      else lines.push({ page: it.page, y: it.y, h: it.h, items: [it] });
     }
-    for (const l of lines) { l.items.sort((a, b) => a.x - b.x); l.text = l.items.map(i => i.s.trim()).join(' '); }
+    for (const l of lines) {
+      l.items.sort((a, b) => a.x - b.x);
+      const ph = [];
+      for (const it of l.items) {
+        const p = ph[ph.length - 1];
+        if (p && it.x - p.x2 < 0.6 * Math.max(p.h, it.h) && !it.joinBlocked) { p.str += ' ' + it.str.trim(); p.x2 = it.x + it.w; }
+        else ph.push({ str: it.str.trim(), x: it.x, x2: it.x + (it.w || it.str.length * it.h * 0.5), h: it.h });
+      }
+      l.items = ph; l.text = ph.map(p => p.str).join('  ');
+    }
     return lines;
   }
 
-  // ---------- ePartner (Great Eastern) policy enquiry printout ----------
-  function isEPartner(text) { return /Policy\s*Detail\s*Information/i.test(text) || (/PAYER\s*DETAILS/i.test(text) && /AGENT\s*DETAILS/i.test(text)); }
+  // ePartner "Policy Detail Information" printout (one policy per file).
+  function looksLikeEpartner(lines) { const t = lines.map(l => l.text).join('\n'); return /Policy Detail Information/i.test(t) || (/PAYER DETAILS/i.test(t) && /AGENT DETAILS/i.test(t)); }
 
-  function parseEPartner(lines) {
-    const text = lines.map(l => l.text).join('\n');
-    const raw = {}, notes = [];
-    const pn = text.match(/P\/N:\s*(\d{6,})/i); if (pn) raw.policyNo = pn[1];
-
-    // Insured table: "Proposer <name> <M/F> <ID no> <ID type> <DOB> ..." - read by pattern, so OCR column drift doesn't matter
-    const row = label => lines.find(l => new RegExp('^' + label + '\\b', 'i').test(l.text));
-    const prop = row('Proposer'), la = row('Life\\s*Assured');
-    const insured = l => {
-      if (!l) return null;
-      const t = l.text.replace(/[|~_]+/g, ' ').replace(/\s+/g, ' ');
-      const m = t.match(/^(?:Proposer|Life\s*Assured)\s+(.+?)\s+([MF])\s+(\S+)\s+(?:\S+\s+)?(\d{1,2}\/\d{1,2}\/\d{4})/i);
-      if (m) return { name: m[1], gender: m[2], nric: m[3], dob: m[4] };
-      // OCR fallback: pick each value by its own pattern
-      const nric = (t.match(/\b\d{6}-\d{2}-\d{4}\b/) || [])[0], dob = (t.match(/\b\d{2}\/\d{2}\/\d{4}\b/) || [])[0];
-      const g = t.match(/\s([MF])\s/), nm = t.match(/^(?:Proposer|Life\s*Assured)\s+(.+?)(?=\s[MF]\s|\s\d{6}-)/i);
-      return nric || dob ? { name: nm && nm[1], gender: g && g[1], nric, dob } : null;
-    };
-    const pr = insured(prop);
-    if (pr) Object.assign(raw, { name: pr.name, gender: pr.gender, nric: pr.nric, dob: pr.dob });
-    // religion is printed on the Life Assured row; only use it when that person is the proposer
-    const rel = la && la.text.match(/\b(Non-?\s?Muslim|Muslim)\b/i);
-    if (rel && (!pr || la.text.includes(pr.name))) raw.religion = rel[1];
-
-    const section = (start, end) => {
-      const a = lines.findIndex(l => new RegExp(start, 'i').test(l.text));
-      if (a < 0) return [];
-      let b = lines.slice(a + 1).findIndex(l => new RegExp(end, 'i').test(l.text));
-      return lines.slice(a + 1, b < 0 ? undefined : a + 1 + b);
-    };
-    // labels compared without spaces, so OCR output like "MobileNo" still matches
-    const LABEL_SET = new Set(['title', 'name', 'idno', 'idtype', 'effectivedate', 'email', 'mobileno', 'invalidaddressind', 'residencetel', 'address', 'officetel', 'a/cno', 'rank', 'contactno', 'servicingagent']);
-    const labelKey = s => s.replace(/[^a-z/]/gi, '').toLowerCase();
-    const isLabel = s => LABEL_SET.has(labelKey(s));
-    // label/value pairs: an item matching a label, followed by the next item on the line if it is not itself a label
-    const pairs = sec => {
-      const out = {};
-      sec.forEach((l, li) => l.items.forEach((it, i) => {
-        const lab = it.s.trim();
-        if (!isLabel(lab) || out[labelKey(lab)] !== undefined) return;
-        const nx = l.items[i + 1];
-        out[labelKey(lab)] = nx && !isLabel(nx.s.trim()) ? { v: nx.s.trim(), x: nx.x, li } : { v: '', x: null, li };
-      }));
-      return out;
-    };
-
-    const payer = section('^PAYER\\s*DETAILS', '^PAYEE\\s*DET|^ASSIGNEE');
-    const P = pairs(payer);
-    if (P.email) raw.email = P.email.v;
-    if (P.mobileno) raw.phone = P.mobileno.v;
-    const home = P.residencetel && !isBlank(P.residencetel.v) ? P.residencetel.v : P.officetel ? P.officetel.v : '';
-    raw.homeTel = home;
-    if (!raw.name && P.name) raw.name = P.name.v;
-    // OCR may drop the spaces in one copy of the name; keep the copy that has them
-    if (raw.name && P.name && P.name.v.replace(/\s/g, '') === raw.name.replace(/\s/g, '') && P.name.v.length > raw.name.length) raw.name = P.name.v;
-    if (!raw.nric && P.idno) raw.nric = P.idno.v;
-    if (P.address && P.address.x != null) {
-      // address continues on following lines at the same x position
-      const parts = [P.address.v];
-      for (let li = P.address.li + 1; li < payer.length; li++) {
-        const it = payer[li].items.find(i => Math.abs(i.x - P.address.x) < 10);
-        if (!it) break; parts.push(it.s.trim());
-      }
-      const sp = splitAddress(parts.join(' '));
-      raw.address = sp.address; raw.postcode = sp.postcode; raw.town = sp.town;
-      if (sp.unsure) notes.push('address');
-    }
-
-    const agent = section('^AGENT\\s*DETAILS', '^Immediate\\s*officer|^TRANSACTION|^GSM');
-    const A = pairs(agent);
-    if (A.name) raw.accountManager = A.name.v;
-    if (A['a/cno']) raw.agentCode = A['a/cno'].v;
-    if (A.contactno) raw.agentPhone = A.contactno.v;
-
-    // Status + first benefit (plan name may wrap over several lines in the first column)
-    const st = text.match(/Policy Status\s+([A-Za-z() -]+?)(?:\s{1}Currency|\n|$)/); if (st) raw.policyStatus = st[1].trim();
-    const bi = lines.findIndex(l => /^BENEFIT DETAILS/.test(l.text));
-    if (bi >= 0) {
-      const first = lines.slice(bi + 1).findIndex(l => /\d{2}\/\d{2}\/\d{4}/.test(l.text));
-      if (first >= 0) {
-        const row = lines[bi + 1 + first], x0 = row.items[0].x, parts = [row.items[0].s.trim()];
-        for (const l of lines.slice(bi + 2 + first)) { if (l.items.length !== 1 && !(l.items[0].x < x0 + 3 && l.items.length <= 2)) break; if (Math.abs(l.items[0].x - x0) > 3) break; parts.push(l.items[0].s.trim()); }
-        raw.planName = parts.join(' ');
-      }
-    }
-    const rec = makeRecord(raw, 'ePartner printout');
-    if (notes.includes('address')) for (const k of ['address', 'postcode', 'town']) if (rec.fields[k].status === 'ok' || k !== 'address') { rec.fields[k].status = rec.fields[k].value ? 'check' : 'missing'; rec.fields[k].note = 'Could not split postcode/town from the address - please check'; }
-    return [rec];
-  }
-
-  // ---------- tables (Excel rows, or a list in a PDF / picture) ----------
-  // rows: array of arrays. Finds the header row and maps columns to fields.
-  function findHeader(rows) {
-    for (let r = 0; r < Math.min(rows.length, 15); r++) {
-      const map = {}; let hits = 0;
-      (rows[r] || []).forEach((h, c) => { const k = fieldForHeader(h); if (k && !Object.values(map).includes(k)) { map[c] = k; hits++; } });
-      if (hits >= 2) return { row: r, map };
-    }
-    return null;
-  }
-
-  function parseRows(rows, source, mapOverride) {
-    const hdr = findHeader(rows);
-    if (!hdr) return { records: [], error: 'Could not find a header row (e.g. Name, Birthday, Phone, Email). Add column titles to the first row and try again.' };
-    const map = mapOverride || hdr.map;
-    const records = [];
-    for (let r = hdr.row + 1; r < rows.length; r++) {
-      const row = rows[r] || [];
-      if (row.every(isBlank)) continue;
-      const raw = {};
-      for (const c in map) if (map[c]) raw[map[c]] = row[c];
-      if (Object.values(raw).every(isBlank)) continue;
-      if (raw.address && !raw.postcode) { const sp = splitAddress(raw.address); if (!sp.unsure) Object.assign(raw, sp); }
-      records.push(makeRecord(raw, source + ' row ' + (r + 1)));
-    }
-    return { records, header: rows[hdr.row], map, headerRow: hdr.row };
-  }
-
-  // A list laid out as a table in a PDF/picture: header line items give column x positions.
-  function linesToRows(lines) {
-    const hi = lines.findIndex(l => l.items.filter(i => fieldForHeader(i.s)).length >= 2);
-    if (hi < 0) return null;
-    const cols = lines[hi].items.map(i => ({ h: i.s.trim(), x: i.x }));
-    const rows = [cols.map(c => c.h)];
-    for (const l of lines.slice(hi + 1)) {
-      const row = cols.map(() => '');
-      for (const it of l.items) { let c = 0; cols.forEach((k, j) => { if (it.x >= k.x - 6) c = j; }); row[c] = (row[c] ? row[c] + ' ' : '') + it.s.trim(); }
-      // a cell that wraps onto a second line: first column empty -> belongs to the row above
-      if (!row[0] && rows.length > 1) { const prev = rows[rows.length - 1]; row.forEach((v, j) => { if (v) prev[j] = (prev[j] ? prev[j] + ' ' : '') + v; }); continue; }
-      rows.push(row);
-    }
-    return rows;
-  }
-
-  // "Label: value" text (a client details sheet, a screenshot of a CRM page, ...)
-  function parseLabelValue(lines, source) {
+  function parseEpartner(lines) {
     const raw = {};
-    for (const l of lines) {
-      const segs = l.text.split(/\s{2,}|\t|(?<=:)\s+(?=[A-Z][a-z]+\s?[A-Za-z]*\s?:)/);
-      for (const seg of segs) {
-        const m = seg.match(/^\s*([A-Za-z][A-Za-z ./#()-]{1,30}?)\s*[:：]\s*(.+)$/);
-        if (!m) continue;
-        const k = fieldForHeader(m[1]);
-        if (k && raw[k] === undefined) raw[k] = m[2];
+    const all = lines.map(l => l.text).join('\n');
+    const pn = all.match(/P\s*[\/|]\s*N\s*:?\s*(\d{6,12})/i); if (pn) raw.policyNo = pn[1];
+
+    // Proposer / Life Assured rows: read each value by its shape, so merged or shifted columns don't matter.
+    const rowOf = label => lines.find(l => l.items[0] && new RegExp('^\\W*' + label + '\\b', 'i').test(l.items[0].str));
+    function readRow(line, label) {
+      const out = {}; if (!line) return out;
+      const text = line.items.map(i => i.str).join('  ').replace(new RegExp('^\\W*' + label + '\\s*', 'i'), '').replace(/[\[\]|{}]/g, ' ');
+      const ic = text.match(/\b\d{6}-\d{2}-\d{4}\b/) || text.match(/\b[A-Z]{1,2}\d{6,9}\b/); if (ic) out.nric = ic[0];
+      const dob = text.match(/\b\d{1,2}\/\d{1,2}\/\d{4}\b/); if (dob) out.dob = dob[0];
+      if (/non[- ]?mus/i.test(text)) out.religion = 'Non-Muslim'; else if (/\bmuslim\b/i.test(text)) out.religion = 'Muslim';
+      const nm = text.match(/^\s*([A-Z][A-Z@'./ -]*?[A-Z.])(?:\s+([MF]))?(?=\s{2,}|\s+[MF]\s|\s+\d|$)/);
+      if (nm) { out.name = nm[1].trim(); if (nm[2]) out.gender = nm[2]; }
+      if (!out.gender) { const g = text.match(/\s([MF])\s/); if (g) out.gender = g[1]; }
+      return out;
+    }
+    const prop = readRow(rowOf('Proposer'), 'Proposer'), la = readRow(rowOf('Life Assured'), 'Life Assured');
+    raw.name = prop.name; raw.nric = prop.nric; raw.dob = prop.dob || la.dob; raw.gender = prop.gender;
+    raw.laName = la.name; raw.laNric = la.nric; raw.religion = la.religion || prop.religion;
+
+    // label → value pairs inside a section
+    const sectionLines = (title, next) => {
+      const s = lines.findIndex(l => new RegExp('^' + title, 'i').test(l.text)); if (s < 0) return [];
+      let e = lines.findIndex((l, i) => i > s && next.some(n => new RegExp('^' + n, 'i').test(l.text)));
+      return lines.slice(s + 1, e < 0 ? undefined : e);
+    };
+    const valueOf = (ls, label) => {
+      for (let i = 0; i < ls.length; i++) {
+        const items = ls[i].items;
+        const k = items.findIndex(it => new RegExp('^' + label + '$', 'i').test(it.str));
+        if (k >= 0 && items[k + 1]) {
+          const v = items[k + 1];
+          // An item right of the label but at the next label's column belongs to that label, not this one.
+          return { str: v.str, x: v.x, line: i, lines: ls };
+        }
+      }
+      return null;
+    };
+    const payer = sectionLines('PAYER DETAILS', ['PAYEE DETAILS', 'AGENT DETAILS', 'ASSIGNEE']);
+    const nm = valueOf(payer, 'Name'); if (nm && !raw.name) raw.name = nm.str;
+    const id = valueOf(payer, 'ID No'); if (id && !raw.nric) raw.nric = id.str;
+    const em = valueOf(payer, 'Email'); if (em) raw.email = em.str;
+    const mob = valueOf(payer, 'Mobile No'); if (mob) raw.phone = mob.str;
+    else { const rt = valueOf(payer, 'Residence Tel'); if (rt) raw.phone = rt.str; }
+    const ad = valueOf(payer, 'Address');
+    if (ad) {
+      const parts = [ad.str];
+      for (let i = ad.line + 1; i < payer.length; i++) {
+        const same = payer[i].items.filter(it => Math.abs(it.x - ad.x) <= 3);
+        if (!same.length) continue;
+        parts.push(...same.map(s => s.str));
+      }
+      raw.address = parts.join(', ');
+      const pc = raw.address.match(/\b(\d{5})\s*,?\s*([A-Za-z][A-Za-z .'-]+)$/);
+      if (pc) { raw.postcode = pc[1]; raw.town = pc[2].trim(); }
+    }
+    const agent = sectionLines('AGENT DETAILS', ['Immediate officer', 'GSM', 'TRANSACTION HISTORY']);
+    const an = valueOf(agent, 'Name'); if (an) raw.accountManager = an.str;
+    const st = lines.find(l => /^Policy Status\b/i.test(l.text)); if (st && st.items[1]) raw.policyStatus = st.items[1].str;
+    // Plan name: the first benefit row's left column (may wrap over several lines)
+    const bi = lines.findIndex(l => /^BENEFIT DETAILS/i.test(l.text));
+    if (bi >= 0) {
+      const planCol = lines.slice(bi + 1).filter(l => l.items[0] && l.items[0].x < lines[bi].items[0].x + 5);
+      const words = [];
+      let prevY = null;
+      for (const l of planCol) {
+        const s = l.items[0].str;
+        if (/^https?:/i.test(s) || (words.length && prevY != null && l.y - prevY > 2.5 * l.h)) break;
+        prevY = l.y;
+        if (/^(Benefit|POLICY VALUES)/i.test(s)) { if (words.length) break; continue; }
+        if (/^\d+(\.\d+)?$/.test(s) && !words.length) continue;
+        words.push(s); if (l.items.length > 1 && words.length > 1) break;
+      }
+      if (words.length) raw.plan = words.join(' ');
+    }
+    return raw;
+  }
+
+  // A table with a header row (customer list in a PDF or a picture).
+  function parseTableLines(lines) {
+    let hi = -1, cols = null;
+    for (let i = 0; i < Math.min(lines.length, 40); i++) {
+      const c = lines[i].items.map(it => ({ key: headerKey(it.str), x: it.x, label: it.str }));
+      if (c.filter(x => x.key).length >= 2) { hi = i; cols = c; break; }
+    }
+    if (hi < 0) return null;
+    const rows = [];
+    for (const l of lines.slice(hi + 1)) {
+      if (l.items.length < 2) continue;
+      const r = {};
+      for (const it of l.items) {
+        let best = null; for (const c of cols) if (c.x <= it.x + Math.max(4, l.h)) best = c;
+        if (best && best.key) r[best.key] = (r[best.key] ? r[best.key] + ' ' : '') + it.str;
+      }
+      if (Object.keys(r).length >= 2) rows.push(r);
+    }
+    return { rows, ignored: cols.filter(c => !c.key).map(c => c.label) };
+  }
+
+  // Grid rows from Excel/CSV: finds the header row, maps columns, skips blank rows.
+  function parseGrid(grid) {
+    let hi = -1, map = null;
+    for (let i = 0; i < Math.min(grid.length, 20); i++) {
+      const m = (grid[i] || []).map(headerKey);
+      if (m.filter(Boolean).length >= 2) { hi = i; map = m; break; }
+    }
+    if (hi < 0) return { rows: [], ignored: [], error: 'I could not find a title row. Put titles such as Customer Name, Phone, Email in the first row.' };
+    const seen = new Set(); map = map.map(k => (k && !seen.has(k) ? (seen.add(k), k) : null));
+    const rows = [];
+    for (const r of grid.slice(hi + 1)) {
+      if (!r || r.every(v => v == null || String(v).trim() === '')) continue;
+      const o = {}; map.forEach((k, i) => { if (k && r[i] != null && String(r[i]).trim() !== '') o[k] = r[i]; });
+      if (Object.keys(o).length) rows.push(o);
+    }
+    const ignored = (grid[hi] || []).filter((h, i) => h != null && String(h).trim() && !map[i]);
+    return { rows, ignored, headerRow: hi + 1 };
+  }
+
+  // ---------- File readers (browser; libraries passed in so tests can run in Node) ----------
+  async function pdfItems(bytes, pdfjs) {
+    const doc = await pdfjs.getDocument({ data: bytes, isEvalSupported: false }).promise;
+    const items = [];
+    for (let p = 1; p <= doc.numPages; p++) {
+      const pg = await doc.getPage(p); const vp = pg.getViewport({ scale: 1 });
+      const tc = await pg.getTextContent();
+      for (const it of tc.items) if (it.str && it.str.trim()) {
+        const h = Math.abs(it.transform[3]) || it.height || 8;
+        items.push({ str: it.str, x: it.transform[4], y: vp.height - it.transform[5], w: it.width, h, page: p, joinBlocked: true });
       }
     }
-    // email / NRIC can be recognised on their own even without a label
-    const text = lines.map(l => l.text).join('\n');
-    if (!raw.email) { const e = text.match(/[\w.+-]+@[\w-]+\.[\w.]+/); if (e) raw.email = e[0]; }
-    if (!raw.nric) { const n = text.match(/\b\d{6}-\d{2}-\d{4}\b/); if (n) raw.nric = n[0]; }
-    const found = Object.keys(raw).length;
-    if (found < 2) return [];
-    return [makeRecord(raw, source)];
+    return { items, pages: doc.numPages };
   }
 
-  // Main entry for text-based sources (PDF text layer or OCR)
-  function parseLines(lines, source) {
-    const text = lines.map(l => l.text).join('\n');
-    if (isEPartner(text)) return { records: parseEPartner(lines), kind: 'ePartner printout' };
-    const rows = linesToRows(lines);
-    if (rows && rows.length > 1) { const r = parseRows(rows, source); if (r.records.length) return { records: r.records, kind: 'customer list' }; }
-    const lv = parseLabelValue(lines, source);
-    if (lv.length) return { records: lv, kind: 'client details' };
-    return { records: [], kind: 'unknown', error: 'No client details recognised in this file.' };
+  // Enlarges the picture, makes it black and white, and removes table grid lines, which otherwise read as "I" or "[".
+  async function cleanPicture(blob) {
+    if (typeof createImageBitmap === 'undefined' || typeof OffscreenCanvas === 'undefined') return blob;
+    const bmp = await createImageBitmap(blob);
+    const k = Math.max(1, Math.min(3, 2400 / bmp.width));
+    const W = Math.round(bmp.width * k), H = Math.round(bmp.height * k);
+    const c = new OffscreenCanvas(W, H), x = c.getContext('2d');
+    x.fillStyle = '#fff'; x.fillRect(0, 0, W, H); x.imageSmoothingQuality = 'high'; x.drawImage(bmp, 0, 0, W, H);
+    const img = x.getImageData(0, 0, W, H), d = img.data, ink = new Uint8Array(W * H), line = new Uint8Array(W * H);
+    for (let i = 0, j = 0; i < ink.length; i++, j += 4) ink[i] = d[j] * 0.3 + d[j + 1] * 0.59 + d[j + 2] * 0.11 < 170 ? 1 : 0;
+    const LH = Math.round(W * 0.03), LV = Math.round(Math.max(18 * k, H * 0.012));
+    for (let y = 0; y < H; y++) { let s = -1; for (let i = 0; i <= W; i++) { const v = i < W && ink[y * W + i]; if (v && s < 0) s = i; if (!v && s >= 0) { if (i - s >= LH) for (let t = s; t < i; t++) line[y * W + t] = 1; s = -1; } } }
+    for (let i = 0; i < W; i++) { let s = -1; for (let y = 0; y <= H; y++) { const v = y < H && ink[y * W + i]; if (v && s < 0) s = y; if (!v && s >= 0) { if (y - s >= LV) for (let t = s; t < y; t++) line[t * W + i] = 1; s = -1; } } }
+    for (let i = 0, j = 0; i < ink.length; i++, j += 4) { const v = ink[i] && !line[i] ? 0 : 255; d[j] = d[j + 1] = d[j + 2] = v; d[j + 3] = 255; }
+    x.putImageData(img, 0, 0);
+    return c.convertToBlob({ type: 'image/png' });
   }
 
-  const api = { FIELDS, SYNONYMS, fieldForHeader, cleanField, makeRecord, crossCheck, splitAddress, toLines, parseLines, parseRows, findHeader, isEPartner };
-  if (typeof module !== 'undefined' && module.exports) module.exports = api;
-  root.W2GParse = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this);
+  async function ocrItems(blob, Tesseract, opts, onProgress) {
+    const worker = await Tesseract.createWorker('eng', 1, Object.assign({ logger: m => onProgress && m.status === 'recognizing text' && onProgress(m.progress) }, opts));
+    try {
+      const { data } = await worker.recognize(await cleanPicture(blob));
+      return data.words.filter(w => w.confidence > 30).map(w => ({ str: w.text, x: w.bbox.x0, y: (w.bbox.y0 + w.bbox.y1) / 2, w: w.bbox.x1 - w.bbox.x0, h: w.bbox.y1 - w.bbox.y0, page: 1 }));
+    } finally { await worker.terminate(); }
+  }
+
+  // Returns {clients: [...], notes: [...], error?}
+  async function readFile(name, bytes, libs, onProgress) {
+    const ext = (name.split('.').pop() || '').toLowerCase();
+    const notes = [];
+    if (['xlsx', 'xls', 'csv', 'xlsm'].includes(ext)) {
+      const wb = libs.XLSX.read(bytes, { type: 'array', cellDates: true, raw: ext === 'csv' ? false : undefined });
+      const clients = [];
+      for (const sn of wb.SheetNames) {
+        const grid = libs.XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: true, defval: null, blankrows: false });
+        const g = parseGrid(grid);
+        if (g.error) { if (wb.SheetNames.length === 1) return { clients: [], notes, error: g.error }; continue; }
+        if (g.headerRow > 1) notes.push(`Sheet "${sn}": skipped the line${g.headerRow > 2 ? 's' : ''} above the column titles.`);
+        if (g.ignored.length) notes.push(`Sheet "${sn}": column${g.ignored.length > 1 ? 's' : ''} ${g.ignored.map(x => '"' + x + '"').join(', ')} not used.`);
+        for (const r of g.rows) clients.push(buildClient(r, { source: `${name} (${sn})` }));
+      }
+      if (!clients.length) return { clients, notes, error: 'No client rows found in this file.' };
+      return { clients, notes };
+    }
+    if (ext === 'pdf') {
+      const { items } = await pdfItems(bytes, libs.pdfjs);
+      if (!items.length) return { clients: [], notes, error: 'This PDF has no text in it (it is a scan). Save it as a PNG/JPG picture and add that instead.' };
+      return fromItems(items, name, false, notes);
+    }
+    if (['png', 'jpg', 'jpeg', 'webp', 'bmp'].includes(ext)) {
+      if (!libs.Tesseract) return { clients: [], notes, error: 'Reading pictures needs the app opened from its Desktop shortcut or the phone link.' };
+      const items = await ocrItems(new Blob([bytes]), libs.Tesseract, libs.tesseractOpts, onProgress);
+      if (!items.length) return { clients: [], notes, error: 'No text found in this picture. Try a sharper screenshot.' };
+      return fromItems(items, name, true, notes);
+    }
+    return { clients: [], notes, error: `I can't read .${ext} files. Use Excel, CSV, PDF, PNG or JPG.` };
+  }
+
+  function fromItems(items, name, fromPicture, notes) {
+    const lines = toLines(items);
+    if (looksLikeEpartner(lines)) {
+      const raw = parseEpartner(lines);
+      if (!raw.name && !raw.nric) return { clients: [], notes, error: 'This looks like an ePartner printout, but I could not find the client name or NRIC.' };
+      if (fromPicture) notes.push('Read from a picture, so every detail is marked Check.');
+      return { clients: [buildClient(raw, { source: name, fromPicture, noCompanyInSource: true })], notes };
+    }
+    const t = parseTableLines(lines);
+    if (t && t.rows.length) {
+      if (t.ignored.length) notes.push(`Column${t.ignored.length > 1 ? 's' : ''} ${t.ignored.map(x => '"' + x + '"').join(', ')} not used.`);
+      return { clients: t.rows.map(r => buildClient(r, { source: name, fromPicture })), notes };
+    }
+    return { clients: [], notes, error: 'I could not find client details in this file. It needs an ePartner policy printout, or a list with titles like Customer Name, Phone, Email.' };
+  }
+
+  const api = { FIELDS, CORE, HEADERS, buildClient, cleanDob, cleanPhone, cleanEmail, cleanNric, cleanGender, parseGrid, toLines, parseEpartner, parseTableLines, fromItems, readFile, pdfItems, nricDigits };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.W2GParse = api;
+})(typeof self !== 'undefined' ? self : this);
